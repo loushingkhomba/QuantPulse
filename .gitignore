@@ -1,0 +1,13 @@
+venv/
+__pycache__/
+*.pyc
+
+data/
+logs/
+models/
+
+*.png
+training_log.txt
+
+backtest copy.py
+trainer copy.py
