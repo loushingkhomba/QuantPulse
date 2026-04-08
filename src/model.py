@@ -34,3 +34,48 @@ class QuantPulse(nn.Module):
         last_output = self.dropout(last_output)
 
         return self.fc(last_output)
+
+
+class QuantPulseMLP(nn.Module):
+
+    def __init__(self, input_size, hidden_size=64, dropout=0.25):
+
+        super().__init__()
+
+        self.net = nn.Sequential(
+            nn.Linear(input_size, hidden_size),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size, hidden_size // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size // 2, 2)
+        )
+
+    def forward(self, x):
+
+        # Use only the latest timestep as a compact baseline.
+        last_step = x[:, -1, :]
+        return self.net(last_step)
+
+
+class QuantPulseSimple(nn.Module):
+    """Ultra-simple model: single hidden layer on last timestep.
+    Designed to prevent overfitting and capture only robust signal.
+    Includes regime-aware features (nifty_trend, market_volatility) in input.
+    """
+
+    def __init__(self, input_size, hidden_size=32, dropout=0.15):
+        super().__init__()
+
+        self.net = nn.Sequential(
+            nn.Linear(input_size, hidden_size),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size, 2)
+        )
+
+    def forward(self, x):
+        # Use only the latest timestep.
+        last_step = x[:, -1, :]
+        return self.net(last_step)

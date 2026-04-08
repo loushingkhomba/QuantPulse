@@ -1,11 +1,10 @@
-import argparse
 import torch
 import os
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from src.zerodha_ohlc_loader import download_data
+from src.data_loader import download_data
 from src.features import create_features
 from src.dataset import prepare_dataset
 from src.model import QuantPulse, QuantPulseMLP, QuantPulseSimple
@@ -25,21 +24,6 @@ else:
     ENSEMBLE_SEEDS = [42, 123, 777]
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="Train QuantPulse and run backtests.")
-    parser.add_argument(
-        "--backtest-only",
-        action="store_true",
-        help="Skip retraining and evaluate existing model checkpoints on the requested date window.",
-    )
-    parser.add_argument("--start", type=str, default="", help="Start date for the evaluation window (YYYY-MM-DD).")
-    parser.add_argument("--end", type=str, default="", help="End date for the evaluation window (YYYY-MM-DD).")
-    return parser.parse_args()
-
-
-ARGS = parse_args()
-
-
 def set_global_seed(seed):
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -49,10 +33,6 @@ def set_global_seed(seed):
 print("Starting training for QuantPulse model...")
 print("Seed:", SEED)
 print("Ensemble seeds:", ENSEMBLE_SEEDS)
-if ARGS.backtest_only:
-    print("Backtest-only mode: loading existing checkpoints and evaluating on the requested window.")
-if ARGS.start or ARGS.end:
-    print("Requested evaluation window:", ARGS.start or "(dataset start)", "to", ARGS.end or "(dataset end)")
 
 set_global_seed(SEED)
 
@@ -71,9 +51,6 @@ print("\nDownloading market data...")
 data = download_data()
 
 print("Creating features...")
-if ARGS.backtest_only:
-    # Keep latest unlabeled rows so window-end dates are included in carry-forward evaluation.
-    os.environ["QUANT_FORWARD_INFERENCE"] = "1"
 data = create_features(data)
 
 # Optional date-window slicing for walk-forward validation.
@@ -82,12 +59,6 @@ train_end_env = os.getenv("QUANT_TRAIN_END", "")
 test_start_env = os.getenv("QUANT_TEST_START", "")
 test_end_env = os.getenv("QUANT_TEST_END", "")
 split_date_env = os.getenv("QUANT_SPLIT_DATE", "")
-
-if ARGS.start:
-    split_date_env = ARGS.start.strip()
-    test_start_env = ARGS.start.strip()
-if ARGS.end:
-    test_end_env = ARGS.end.strip()
 
 if any([train_start_env, train_end_env, test_start_env, test_end_env]):
     data = data.copy()
@@ -258,41 +229,33 @@ if signal_mode == "model":
                 model.load_state_dict(torch.load(model_path_for_seed, map_location=device, weights_only=True))
             except RuntimeError:
                 print("Model architecture changed. Starting new training.")
-        elif ARGS.backtest_only:
-            if not os.path.exists(model_path_for_seed):
-                raise FileNotFoundError(f"Missing checkpoint for backtest-only mode: {model_path_for_seed}")
-            print("Backtest-only mode: loading checkpoint", model_path_for_seed)
-            model.load_state_dict(torch.load(model_path_for_seed, map_location=device, weights_only=True))
         else:
             print("Starting fresh training (no warm start).")
 
-        if not ARGS.backtest_only:
-            train_stats = train(
-                model,
-                X_tr_loop,
-                y_tr_loop,
-                X_val_loop,
-                y_val_loop,
-                epochs=40,
-                batch_size=64,
-                save_every=20,
-                model_path=model_path_for_seed,
-                checkpoint_path=checkpoint_path_for_seed,
-                patience=50,
-                lr=3e-4,
-                weight_decay=5e-4,
-                grad_clip=1.0,
-                label_smoothing=0.05,
-                confidence_penalty=float(os.getenv("QUANT_CONFIDENCE_PENALTY", "0.01"))
-            )
+        train_stats = train(
+            model,
+            X_tr_loop,
+            y_tr_loop,
+            X_val_loop,
+            y_val_loop,
+            epochs=40,
+            batch_size=64,
+            save_every=20,
+            model_path=model_path_for_seed,
+            checkpoint_path=checkpoint_path_for_seed,
+            patience=50,
+            lr=3e-4,
+            weight_decay=5e-4,
+            grad_clip=1.0,
+            label_smoothing=0.05,
+            confidence_penalty=float(os.getenv("QUANT_CONFIDENCE_PENALTY", "0.01"))
+        )
 
-            if os.path.exists(model_path_for_seed):
-                model.load_state_dict(torch.load(model_path_for_seed, map_location=device, weights_only=True))
+        if os.path.exists(model_path_for_seed):
+            model.load_state_dict(torch.load(model_path_for_seed, map_location=device, weights_only=True))
 
-            print("Best val loss:", round(train_stats["best_val_loss"], 5), "at epoch", train_stats["best_epoch"])
-            print("Model saved to", model_path_for_seed)
-        else:
-            print("Skipping retraining for backtest-only mode.")
+        print("Best val loss:", round(train_stats["best_val_loss"], 5), "at epoch", train_stats["best_epoch"])
+        print("Model saved to", model_path_for_seed)
 
         model.eval()
         with torch.no_grad():
@@ -399,8 +362,7 @@ pred_df = pred_df.groupby(["date", "ticker"], as_index=False).agg({
 })
 
 # Smooth confidence per ticker to reduce noise-driven trade flips.
-# Slightly relaxed default smoothing to preserve responsiveness.
-confidence_ema_span = int(os.getenv("QUANT_CONFIDENCE_EMA_SPAN", "2"))
+confidence_ema_span = int(os.getenv("QUANT_CONFIDENCE_EMA_SPAN", "3"))
 if confidence_ema_span > 1:
     pred_df = pred_df.sort_values(["ticker", "date"]).reset_index(drop=True)
     pred_df["confidence"] = pred_df.groupby("ticker")["confidence"].transform(
@@ -442,27 +404,6 @@ aggression_clip_high = float(os.getenv("QUANT_AGGRESSION_CLIP_HIGH", "0.60"))
 weight_temperature = float(os.getenv("QUANT_WEIGHT_TEMPERATURE", "1.2"))
 fallback_conf_threshold = float(os.getenv("QUANT_FALLBACK_CONF_THRESHOLD", "0.52"))
 fallback_reduce_factor = float(os.getenv("QUANT_FALLBACK_REDUCE_FACTOR", "0.50"))
-adaptive_regime_logic = os.getenv("QUANT_ADAPTIVE_REGIME_LOGIC", "1").strip() == "1"
-bad_volatility_cutoff = float(os.getenv("QUANT_BAD_VOLATILITY_CUTOFF", "1.25"))
-bad_drawdown_cutoff = float(os.getenv("QUANT_BAD_DRAWDOWN_CUTOFF", "-0.08"))
-trend_strength_cutoff = float(os.getenv("QUANT_TREND_STRENGTH_CUTOFF", "0.00"))
-
-# Regime-split thresholds (adaptive layer only; execution math remains unchanged).
-rank_threshold_bad = float(os.getenv("QUANT_RANK_THRESHOLD_BAD", "0.68"))
-rank_threshold_neutral = float(os.getenv("QUANT_RANK_THRESHOLD_NEUTRAL", "0.60"))
-rank_threshold_trending = float(os.getenv("QUANT_RANK_THRESHOLD_TRENDING", "0.58"))
-
-spread_threshold_bad = float(os.getenv("QUANT_SIGNAL_SPREAD_BAD", "0.015"))
-spread_threshold_neutral = float(os.getenv("QUANT_SIGNAL_SPREAD_NEUTRAL", "0.010"))
-spread_threshold_trending = float(os.getenv("QUANT_SIGNAL_SPREAD_TRENDING", "0.008"))
-
-fallback_conf_threshold_bad = float(os.getenv("QUANT_FALLBACK_CONF_THRESHOLD_BAD", str(fallback_conf_threshold)))
-fallback_reduce_factor_bad = float(os.getenv("QUANT_FALLBACK_REDUCE_FACTOR_BAD", "0.50"))
-
-# Targeted 2021 defense controls (bad regime only).
-regime_exposure_scale_bad = float(os.getenv("QUANT_REGIME_EXPOSURE_SCALE_BAD", "0.60"))
-kill_switch_drawdown_threshold = float(os.getenv("QUANT_KILL_SWITCH_DRAWDOWN_THRESHOLD", "-0.12"))
-kill_switch_max_new_positions = int(os.getenv("QUANT_KILL_SWITCH_MAX_NEW_POSITIONS", "1"))
 
 print("Min rank threshold:", min_rank_threshold)
 print("Transaction cost:", transaction_cost)
@@ -476,13 +417,6 @@ print("Aggression clip:", (aggression_clip_low, aggression_clip_high))
 print("Weight temperature:", weight_temperature)
 print("Fallback confidence threshold:", fallback_conf_threshold)
 print("Fallback reduce factor:", fallback_reduce_factor)
-print("Adaptive regime logic:", adaptive_regime_logic)
-print("Bad regime cutoffs:", {"volatility": bad_volatility_cutoff, "drawdown": bad_drawdown_cutoff})
-print("Rank thresholds by regime:", {"bad": rank_threshold_bad, "neutral": rank_threshold_neutral, "trending": rank_threshold_trending})
-print("Signal spread thresholds by regime:", {"bad": spread_threshold_bad, "neutral": spread_threshold_neutral, "trending": spread_threshold_trending})
-print("Bad regime exposure scale:", regime_exposure_scale_bad)
-print("Kill-switch drawdown threshold:", kill_switch_drawdown_threshold)
-print("Kill-switch max new positions:", kill_switch_max_new_positions)
 
 # -------------------------------------------------
 # BACKTEST FUNCTION
@@ -494,8 +428,6 @@ def run_backtest(conf_col):
     Lowers rank threshold to allow more trades on weak signals.
     """
 
-
-    carry_forward_open = os.getenv("QUANT_CARRY_FORWARD_OPEN", "1" if ARGS.backtest_only else "0").strip() == "1"
 
     portfolio_values = []
     capital = initial_capital
@@ -509,28 +441,16 @@ def run_backtest(conf_col):
     #groups = list(pred_df.groupby(pred_df.index // group_size))
     groups = list(pred_df.groupby("date"))
 
-    if carry_forward_open:
-        max_iter = max(0, len(groups) - 1)
-    else:
-        max_iter = max(0, len(groups) - holding - execution_delay)
-
-    for i in range(max_iter):
+    for i in range(len(groups) - holding - execution_delay):
 
         today = groups[i][1]
-        exit_index = i + holding + execution_delay
-        has_full_holding_exit = exit_index < len(groups)
-        if has_full_holding_exit:
-            tomorrow = groups[exit_index][1]
-        elif carry_forward_open:
-            tomorrow = groups[-1][1]
-        else:
-            continue
+        tomorrow = groups[i + holding + execution_delay][1]
 
         if len(today) == 0:
             portfolio_values.append(capital)
             continue
 
-        # Use the same tradable universe across strategies (must exist on mark/exit date).
+        # Use the same tradable universe across strategies (must exist on exit date).
         tomorrow_tickers = set(tomorrow["ticker"].values)
         today = today[today["ticker"].isin(tomorrow_tickers)]
         if len(today) == 0:
@@ -538,38 +458,8 @@ def run_backtest(conf_col):
             continue
 
         day = today.copy()
-
-        # Adaptive regime policy controls only signal filtering and exposure gating.
-        day_regime_state = int(np.nan_to_num(day["regime_state"].median(), nan=0.0)) if "regime_state" in day.columns else 0
-        day_volatility_regime = float(np.nan_to_num(day["volatility_regime"].median(), nan=1.0)) if "volatility_regime" in day.columns else 1.0
-        day_drawdown_state = float(np.nan_to_num(day["nifty_drawdown_63d"].median(), nan=0.0)) if "nifty_drawdown_63d" in day.columns else 0.0
-        day_trend_strength = float(np.nan_to_num(day["trend_strength"].median(), nan=0.0)) if "trend_strength" in day.columns else 0.0
-
-        if adaptive_regime_logic:
-            is_bad_regime = (
-                (day_regime_state < 0)
-                or (day_volatility_regime > bad_volatility_cutoff)
-                or (day_drawdown_state < bad_drawdown_cutoff)
-            )
-            is_trending_regime = (not is_bad_regime) and (day_trend_strength > trend_strength_cutoff)
-
-            if is_bad_regime:
-                day_min_rank_threshold = rank_threshold_bad
-                day_min_signal_spread = spread_threshold_bad
-            elif is_trending_regime:
-                day_min_rank_threshold = rank_threshold_trending
-                day_min_signal_spread = spread_threshold_trending
-            else:
-                day_min_rank_threshold = rank_threshold_neutral
-                day_min_signal_spread = spread_threshold_neutral
-        else:
-            is_bad_regime = (day_regime_state <= 0) or (day_volatility_regime > bad_volatility_cutoff) or (day_drawdown_state < bad_drawdown_cutoff)
-            is_trending_regime = day_trend_strength > trend_strength_cutoff
-            day_min_rank_threshold = min_rank_threshold
-            day_min_signal_spread = min_signal_spread
-
         day["rank_pct"] = day[conf_col].rank(pct=True, method="first")
-        candidates = day[day["rank_pct"] >= day_min_rank_threshold]
+        candidates = day[day["rank_pct"] >= min_rank_threshold]
         top = candidates.sort_values(conf_col, ascending=False).head(top_k)
 
         if len(top) == 0:
@@ -577,14 +467,10 @@ def run_backtest(conf_col):
             continue
 
         # Turnover control: retain existing picks and limit new entries.
-        day_max_new_positions = turnover_min_new_positions
-        if is_bad_regime and day_drawdown_state < kill_switch_drawdown_threshold:
-            day_max_new_positions = min(day_max_new_positions, max(0, kill_switch_max_new_positions))
-
         selected_tickers = list(top["ticker"].values)
         existing = [t for t in selected_tickers if t in prev_selected]
         newcomers = [t for t in selected_tickers if t not in prev_selected]
-        newcomers = newcomers[:max(0, day_max_new_positions)]
+        newcomers = newcomers[:max(0, turnover_min_new_positions)]
         allowed_tickers = set(existing + newcomers)
 
         # Cooldown control to avoid immediate re-trades on the same ticker.
@@ -606,7 +492,7 @@ def run_backtest(conf_col):
 
         # Skip noisy days where model has almost no ranking confidence.
         signal_spread = top[conf_col].iloc[0] - top[conf_col].iloc[-1]
-        if signal_spread < day_min_signal_spread:
+        if signal_spread < min_signal_spread:
             portfolio_values.append(capital)
             continue
 
@@ -616,15 +502,8 @@ def run_backtest(conf_col):
         trend_strength = float(np.nan_to_num(top["trend_strength"].iloc[0], nan=0.0)) if "trend_strength" in top.columns else 0.0
         day_confidence = float(top[conf_col].max())
         fallback_scale = 1.0
-        regime_exposure_scale = 1.0
-
-        # Confidence gating only in adverse/unstable regimes.
-        if is_bad_regime and day_confidence < fallback_conf_threshold_bad:
-            fallback_scale = fallback_reduce_factor_bad
-
-        # Smooth protection: scale position impact down in bad regimes.
-        if is_bad_regime:
-            regime_exposure_scale = regime_exposure_scale_bad
+        if (regime_state <= 0 or volatility_regime > 1.25 or drawdown_state < -0.08) and day_confidence < fallback_conf_threshold:
+            fallback_scale = fallback_reduce_factor
 
         # Convert scores to positive values for stable weighting.
         scores = top[conf_col].values
@@ -674,13 +553,13 @@ def run_backtest(conf_col):
 
         if active_weight > 0:
             daily_return = daily_return / active_weight
-            daily_return = daily_return * fallback_scale * regime_exposure_scale
+            daily_return = daily_return * fallback_scale
             trade_days += 1
-            if volatility_regime > bad_volatility_cutoff:
+            if volatility_regime > 1.25:
                 regime_day_returns["high_vol"].append(daily_return)
-            elif drawdown_state < bad_drawdown_cutoff:
+            elif drawdown_state < -0.08:
                 regime_day_returns["drawdown"].append(daily_return)
-            elif trend_strength > trend_strength_cutoff and regime_state >= 0:
+            elif trend_strength > 0 and regime_state >= 0:
                 regime_day_returns["trending"].append(daily_return)
             else:
                 regime_day_returns["neutral"].append(daily_return)

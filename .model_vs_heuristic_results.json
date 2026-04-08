@@ -1,0 +1,84 @@
+{
+  "timestamp": "2026-04-07T23:09:46.812704",
+  "scenarios": {
+    "base_costs": {
+      "summary": {
+        "model": {
+          "avg_final": 23784.67,
+          "avg_sharpe": 2.535,
+          "count": 1
+        },
+        "momentum": {
+          "avg_final": 20848.65,
+          "avg_sharpe": 2.061,
+          "count": 1
+        },
+        "random": {
+          "avg_final": 53253.47,
+          "avg_sharpe": 4.405,
+          "count": 1
+        }
+      },
+      "ordering": {
+        "model_gt_momentum_final": true,
+        "momentum_gt_random_final": false,
+        "model_gt_momentum_sharpe": true,
+        "momentum_gt_random_sharpe": false,
+        "pass": false
+      }
+    },
+    "delay2_cap02": {
+      "summary": {
+        "model": {
+          "avg_final": 36355.95,
+          "avg_sharpe": 3.155,
+          "count": 1
+        },
+        "momentum": {
+          "avg_final": 12685.76,
+          "avg_sharpe": 1.387,
+          "count": 1
+        },
+        "random": {
+          "avg_final": 36461.32,
+          "avg_sharpe": 3.361,
+          "count": 1
+        }
+      },
+      "ordering": {
+        "model_gt_momentum_final": true,
+        "momentum_gt_random_final": false,
+        "model_gt_momentum_sharpe": true,
+        "momentum_gt_random_sharpe": false,
+        "pass": false
+      }
+    },
+    "partial_missing_data": {
+      "summary": {
+        "model": {
+          "avg_final": 11824.64,
+          "avg_sharpe": 0.991,
+          "count": 1
+        },
+        "momentum": {
+          "avg_final": 12283.81,
+          "avg_sharpe": 1.26,
+          "count": 1
+        },
+        "random": {
+          "avg_final": 17816.84,
+          "avg_sharpe": 1.524,
+          "count": 1
+        }
+      },
+      "ordering": {
+        "model_gt_momentum_final": false,
+        "momentum_gt_random_final": false,
+        "model_gt_momentum_sharpe": false,
+        "momentum_gt_random_sharpe": false,
+        "pass": false
+      }
+    }
+  },
+  "overall_pass": false
+}

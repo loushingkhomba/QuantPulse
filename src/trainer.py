@@ -14,7 +14,13 @@ def train(
     batch_size=64,
     save_every=100,
     model_path=None,
-    patience=20
+    patience=20,
+    checkpoint_path=None,
+    lr=3e-4,
+    weight_decay=5e-4,
+    grad_clip=1.0,
+    label_smoothing=0.05,
+    confidence_penalty=0.0
 ):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -27,9 +33,17 @@ def train(
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size)
 
-    criterion = nn.CrossEntropyLoss()
+    class_counts = torch.bincount(y_train.detach().cpu(), minlength=2).float()
+    class_weights = class_counts.sum() / (2.0 * torch.clamp(class_counts, min=1.0))
+    class_weights = class_weights.to(device)
+    criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=label_smoothing)
 
-    optimizer = optim.Adam(model.parameters(), lr=0.0005, weight_decay=1e-4)
+    print(
+        "Class weights:",
+        [round(float(class_weights[0].item()), 4), round(float(class_weights[1].item()), 4)]
+    )
+
+    optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
 
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
@@ -39,7 +53,10 @@ def train(
     )
 
     best_val_loss = float("inf")
+    best_epoch = -1
     patience_counter = 0
+    last_train_loss = None
+    last_val_loss = None
 
     for epoch in range(epochs):
 
@@ -58,7 +75,17 @@ def train(
 
             loss = criterion(outputs, batch_y)
 
+            # Penalize overconfident logits to reduce noisy overtrading downstream.
+            if confidence_penalty > 0:
+                probs = torch.softmax(outputs, dim=1)
+                p1 = probs[:, 1]
+                smooth_penalty = torch.mean((p1 - 0.5) ** 2)
+                loss = loss + (confidence_penalty * smooth_penalty)
+
             loss.backward()
+
+            if grad_clip is not None:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
 
             optimizer.step()
 
@@ -88,6 +115,8 @@ def train(
                 total_val_loss += loss.item()
 
         avg_val_loss = total_val_loss / len(val_loader)
+        last_train_loss = avg_train_loss
+        last_val_loss = avg_val_loss
 
         scheduler.step(avg_val_loss)
 
@@ -102,6 +131,7 @@ def train(
         if avg_val_loss < best_val_loss:
 
             best_val_loss = avg_val_loss
+            best_epoch = epoch
             patience_counter = 0
 
             if model_path:
@@ -118,6 +148,15 @@ def train(
             break
 
         # periodic checkpoint
-        if model_path and epoch % save_every == 0:
-            torch.save(model.state_dict(), model_path)
+        if checkpoint_path and epoch % save_every == 0:
+            torch.save(model.state_dict(), checkpoint_path)
             print("Checkpoint saved.")
+
+    return {
+        "best_val_loss": float(best_val_loss),
+        "best_epoch": int(best_epoch),
+        "last_train_loss": float(last_train_loss) if last_train_loss is not None else None,
+        "last_val_loss": float(last_val_loss) if last_val_loss is not None else None,
+        "class_weight_0": float(class_weights[0].item()),
+        "class_weight_1": float(class_weights[1].item())
+    }

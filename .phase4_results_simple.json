@@ -1,0 +1,115 @@
+{
+  "timestamp": "2026-04-07T20:09:35.887087",
+  "model": "QuantPulseSimple",
+  "patience": 50,
+  "test_fraction": 0.3,
+  "seeds": {
+    "42": {
+      "real_final": 41691.25,
+      "real_sharpe": 3.449,
+      "real_ann": 149.8,
+      "rand_final": 32092.41,
+      "rand_sharpe": 3.126,
+      "rand_ann": 111.21,
+      "beat_random": true,
+      "sharpe_edge": 0.32299999999999995
+    },
+    "123": {
+      "real_final": 41664.51,
+      "real_sharpe": 3.448,
+      "real_ann": 149.69,
+      "rand_final": 20965.58,
+      "rand_sharpe": 2.161,
+      "rand_ann": 60.75,
+      "beat_random": true,
+      "sharpe_edge": 1.287
+    },
+    "777": {
+      "real_final": 42361.27,
+      "real_sharpe": 3.483,
+      "real_ann": 152.36,
+      "rand_final": 10909.9,
+      "rand_sharpe": 0.624,
+      "rand_ann": 13.2,
+      "beat_random": true,
+      "sharpe_edge": 2.859
+    },
+    "1337": {
+      "real_final": 41593.07,
+      "real_sharpe": 3.443,
+      "real_ann": 149.42,
+      "rand_final": 21954.1,
+      "rand_sharpe": 2.198,
+      "rand_ann": 65.57,
+      "beat_random": true,
+      "sharpe_edge": 1.245
+    },
+    "2024": {
+      "real_final": 42377.28,
+      "real_sharpe": 3.483,
+      "real_ann": 152.42,
+      "rand_final": 19538.41,
+      "rand_sharpe": 1.886,
+      "rand_ann": 53.65,
+      "beat_random": true,
+      "sharpe_edge": 1.5970000000000002
+    },
+    "7": {
+      "real_final": 41665.46,
+      "real_sharpe": 3.449,
+      "real_ann": 149.7,
+      "rand_final": 20538.11,
+      "rand_sharpe": 2.136,
+      "rand_ann": 58.64,
+      "beat_random": true,
+      "sharpe_edge": 1.3129999999999997
+    },
+    "17": {
+      "real_final": 42379.26,
+      "real_sharpe": 3.484,
+      "real_ann": 152.43,
+      "rand_final": 13984.0,
+      "rand_sharpe": 1.727,
+      "rand_ann": 52.9,
+      "beat_random": true,
+      "sharpe_edge": 1.757
+    },
+    "99": {
+      "real_final": 42390.4,
+      "real_sharpe": 3.484,
+      "real_ann": 152.47,
+      "rand_final": 22089.28,
+      "rand_sharpe": 2.158,
+      "rand_ann": 66.23,
+      "beat_random": true,
+      "sharpe_edge": 1.326
+    },
+    "31415": {
+      "real_final": 42376.96,
+      "real_sharpe": 3.484,
+      "real_ann": 152.42,
+      "rand_final": 28501.19,
+      "rand_sharpe": 2.921,
+      "rand_ann": 95.73,
+      "beat_random": true,
+      "sharpe_edge": 0.5630000000000002
+    },
+    "2718": {
+      "real_final": 41557.65,
+      "real_sharpe": 3.442,
+      "real_ann": 149.28,
+      "rand_final": 22701.27,
+      "rand_sharpe": 2.232,
+      "rand_ann": 69.16,
+      "beat_random": true,
+      "sharpe_edge": 1.21
+    }
+  },
+  "aggregate": {
+    "beat_count": 10,
+    "avg_sharpe_edge": 1.348,
+    "avg_real_final": 42005.711,
+    "avg_rand_final": 21327.425,
+    "passed": true
+  }
+}

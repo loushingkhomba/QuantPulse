@@ -1,0 +1,28 @@
+{
+  "lock_date": "2026-04-08",
+  "model": {
+    "type": "simple",
+    "ensemble_seeds": [42, 123, 777],
+    "sequence_length": 20,
+    "holding_days": 5,
+    "top_k": 3
+  },
+  "execution_defaults": {
+    "transaction_cost": 0.0005,
+    "slippage": 0.0002,
+    "max_position_weight": 0.5,
+    "execution_delay": 0
+  },
+  "defense_defaults": {
+    "rank_threshold_bad": 0.68,
+    "signal_spread_bad": 0.015,
+    "fallback_reduce_factor_bad": 0.5,
+    "regime_exposure_scale_bad": 0.6,
+    "kill_switch_drawdown_threshold": -0.12,
+    "kill_switch_max_new_positions": 1
+  },
+  "governance": {
+    "notes": "Any strategy parameter change requires restart from Phase A week 1.",
+    "change_control": "manual"
+  }
+}

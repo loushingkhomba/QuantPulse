@@ -1,0 +1,96 @@
+{
+  "timestamp": "2026-04-08T13:25:44.249208",
+  "outer_seeds": [
+    42
+  ],
+  "baseline_runs": 1,
+  "gates": {
+    "min_seed_win_rate": 0.8,
+    "min_avg_sharpe_edge": 0.0,
+    "min_worst_seed_avg_sharpe_edge": -0.25,
+    "min_avg_final_ratio": 1.05
+  },
+  "windows": {
+    "train_2017_2020_test_2021": {
+      "scenarios": {
+        "base_costs": {
+          "summary": {
+            "seed_win_rate": 0.0,
+            "avg_sharpe_edge": -0.14800000000000013,
+            "worst_seed_avg_sharpe_edge": -0.14800000000000013,
+            "avg_final_ratio": 0.9807602142411924,
+            "passed": false,
+            "gate_checks": {
+              "seed_win_rate": false,
+              "avg_sharpe_edge": false,
+              "worst_seed_avg_sharpe_edge": true,
+              "avg_final_ratio": false
+            }
+          },
+          "run_count": 1
+        }
+      }
+    },
+    "train_2018_2021_test_2022": {
+      "scenarios": {
+        "base_costs": {
+          "summary": {
+            "seed_win_rate": 1.0,
+            "avg_sharpe_edge": 2.101,
+            "worst_seed_avg_sharpe_edge": 2.101,
+            "avg_final_ratio": 1.8671317913337209,
+            "passed": true,
+            "gate_checks": {
+              "seed_win_rate": true,
+              "avg_sharpe_edge": true,
+              "worst_seed_avg_sharpe_edge": true,
+              "avg_final_ratio": true
+            }
+          },
+          "run_count": 1
+        }
+      }
+    },
+    "train_2019_2022_test_2023": {
+      "scenarios": {
+        "base_costs": {
+          "summary": {
+            "seed_win_rate": 1.0,
+            "avg_sharpe_edge": 2.548,
+            "worst_seed_avg_sharpe_edge": 2.548,
+            "avg_final_ratio": 1.9579403050974933,
+            "passed": true,
+            "gate_checks": {
+              "seed_win_rate": true,
+              "avg_sharpe_edge": true,
+              "worst_seed_avg_sharpe_edge": true,
+              "avg_final_ratio": true
+            }
+          },
+          "run_count": 1
+        }
+      }
+    },
+    "train_2020_2023_test_2024": {
+      "scenarios": {
+        "base_costs": {
+          "summary": {
+            "seed_win_rate": 1.0,
+            "avg_sharpe_edge": 0.6290000000000002,
+            "worst_seed_avg_sharpe_edge": 0.6290000000000002,
+            "avg_final_ratio": 1.191891584572923,
+            "passed": true,
+            "gate_checks": {
+              "seed_win_rate": true,
+              "avg_sharpe_edge": true,
+              "worst_seed_avg_sharpe_edge": true,
+              "avg_final_ratio": true
+            }
+          },
+          "run_count": 1
+        }
+      }
+    }
+  },
+  "overall_pass": false
+}

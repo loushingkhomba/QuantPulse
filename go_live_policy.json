@@ -1,0 +1,55 @@
+{
+  "phases": {
+    "A_forward_paper": {
+      "required_consecutive_weekly_passes": 3,
+      "weekly_gates": {
+        "min_model_weekly_equity": 1.0,
+        "min_model_vs_random_edge": 0.02,
+        "min_model_hit_rate": 0.51,
+        "max_weekly_drawdown": 0.03,
+        "require_no_missing_run_days": true
+      }
+    },
+    "B_micro_live": {
+      "required_consecutive_weekly_passes": 2,
+      "risk_limits": {
+        "max_daily_loss": 0.01,
+        "max_weekly_loss": 0.025,
+        "max_portfolio_drawdown": 0.04,
+        "max_position_weight": 0.02,
+        "max_gross_exposure": 0.25,
+        "max_new_positions_per_day": 2,
+        "max_consecutive_loss_days": 3
+      },
+      "operational_incident_definitions": [
+        "order_not_acknowledged_within_60_seconds",
+        "fill_price_deviation_gt_0_5_percent",
+        "position_mismatch_broker_vs_system",
+        "signal_generated_more_than_15_minutes_late",
+        "manual_intervention_required"
+      ],
+      "required_operational_incidents": 0
+    },
+    "C_scale_up": {
+      "size_steps": [0.1, 0.2, 0.35, 0.5],
+      "step_hold_weeks": 1,
+      "rollback_on_fail": true,
+      "freeze_weeks_after_fail": 1,
+      "daily_correlation_guard": {
+        "market_drawdown_trigger": -0.015,
+        "gross_exposure_reduction": 0.5
+      },
+      "max_drawdown": 0.05
+    }
+  },
+  "slippage_monitor": {
+    "assumed_slippage": 0.0005,
+    "max_excess_slippage_before_alert": 0.0003
+  },
+  "model_decay": {
+    "review_every_days": 90,
+    "rolling_sharpe_window_days": 30,
+    "min_sharpe_edge": 0.0,
+    "action_on_fail": "freeze_live_and_restart_phase_A_after_retrain"
+  }
+}

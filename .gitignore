@@ -11,3 +11,5 @@ training_log.txt
 
 backtest copy.py
 trainer copy.py
+
+.env

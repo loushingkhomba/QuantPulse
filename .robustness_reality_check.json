@@ -1,0 +1,114 @@
+{
+  "cost_only": {
+    "seeds": {
+      "42": {
+        "real_final": 30152.4,
+        "real_sharpe": 2.842,
+        "real_ann": 102.93,
+        "rand_final": 12670.05,
+        "rand_sharpe": 0.76,
+        "rand_ann": 16.39,
+        "beat_random": true,
+        "sharpe_edge": 2.082
+      },
+      "123": {
+        "real_final": 22226.97,
+        "real_sharpe": 2.163,
+        "real_ann": 66.89,
+        "rand_final": 10556.75,
+        "rand_sharpe": 0.266,
+        "rand_ann": 3.54,
+        "beat_random": true,
+        "sharpe_edge": 1.8969999999999998
+      },
+      "1337": {
+        "real_final": 23370.36,
+        "real_sharpe": 2.283,
+        "real_ann": 72.34,
+        "rand_final": 12625.47,
+        "rand_sharpe": 0.767,
+        "rand_ann": 16.12,
+        "beat_random": true,
+        "sharpe_edge": 1.516
+      },
+      "2024": {
+        "real_final": 21993.48,
+        "real_sharpe": 2.155,
+        "real_ann": 65.76,
+        "rand_final": 14867.64,
+        "rand_sharpe": 1.192,
+        "rand_ann": 28.96,
+        "beat_random": true,
+        "sharpe_edge": 0.9629999999999999
+      },
+      "7": {
+        "real_final": 21611.89,
+        "real_sharpe": 2.096,
+        "real_ann": 63.91,
+        "rand_final": 10112.18,
+        "rand_sharpe": 0.155,
+        "rand_ann": 0.93,
+        "beat_random": true,
+        "sharpe_edge": 1.941
+      },
+      "31415": {
+        "real_final": 21813.92,
+        "real_sharpe": 2.138,
+        "real_ann": 64.89,
+        "rand_final": 10338.68,
+        "rand_sharpe": 0.207,
+        "rand_ann": 2.16,
+        "beat_random": true,
+        "sharpe_edge": 1.9309999999999998
+      },
+      "2718": {
+        "real_final": 22308.15,
+        "real_sharpe": 2.173,
+        "real_ann": 67.28,
+        "rand_final": 11136.74,
+        "rand_sharpe": 0.432,
+        "rand_ann": 7.15,
+        "beat_random": true,
+        "sharpe_edge": 1.741
+      }
+    },
+    "aggregate": {
+      "beat_count": 7,
+      "avg_sharpe_edge": 1.7244285714285712,
+      "avg_real_final": 23353.88142857143,
+      "avg_rand_final": 11758.215714285714,
+      "passed": true
+    }
+  },
+  "cost_slippage_constraints_delay": {
+    "seeds": {
+      "123": {
+        "real_final": 19872.84,
+        "real_sharpe": 1.892,
+        "real_ann": 55.5,
+        "rand_final": 10402.22,
+        "rand_sharpe": 0.225,
+        "rand_ann": 2.57,
+        "beat_random": true,
+        "sharpe_edge": 1.6669999999999998
+      },
+      "1337": {
+        "real_final": 20435.35,
+        "real_sharpe": 1.973,
+        "real_ann": 58.32,
+        "rand_final": 11919.6,
+        "rand_sharpe": 0.594,
+        "rand_ann": 11.95,
+        "beat_random": true,
+        "sharpe_edge": 1.379
+      }
+    },
+    "aggregate": {
+      "beat_count": 2,
+      "avg_sharpe_edge": 1.523,
+      "avg_real_final": 20154.095,
+      "avg_rand_final": 11160.91,
+      "passed": true
+    }
+  }
+}

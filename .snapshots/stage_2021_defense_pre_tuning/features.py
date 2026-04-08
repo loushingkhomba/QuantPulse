@@ -21,7 +21,6 @@ def create_features(df):
     df = df.copy()
     df = df.reset_index()
     disable_regime = os.getenv("QUANT_DISABLE_REGIME_FEATURES", "0").strip() == "1"
-    forward_inference = os.getenv("QUANT_FORWARD_INFERENCE", "0").strip() == "1"
     df["returns"] = df.groupby("Ticker")["Close"].pct_change()
 
     df["ma10"] = df.groupby("Ticker")["Close"].transform(
@@ -132,16 +131,9 @@ def create_features(df):
 
     # Excess return target: beat Nifty by 0.5% over 5 days.
     df["excess_return_5"] = df["future_return_5"] - df["nifty_future_5"]
-    df["target"] = np.where(
-        df["excess_return_5"].notna(),
-        (df["excess_return_5"] > 0.005).astype(int),
-        np.nan,
-    )
+    df["target"] = (df["excess_return_5"] > 0.005).astype(int)
 
-    if forward_inference:
-        df = df.dropna(subset=[col for col in df.columns if col not in {"future_return_5", "nifty_future_5", "excess_return_5", "target"}])
-    else:
-        df = df.dropna()
+    df = df.dropna()
     df.drop(columns=["future_return_5", "nifty_future_5", "excess_return_5"], inplace=True)
 
     # 🔍 SANITY CHECK
