@@ -4,30 +4,6 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 
 
-def _pairwise_rank_loss(scores, labels, dates):
-    unique_dates = torch.unique(dates)
-    per_date_losses = []
-    for date_value in unique_dates:
-        mask = dates == date_value
-        if torch.sum(mask) < 2:
-            continue
-        day_scores = scores[mask]
-        day_labels = labels[mask]
-
-        pos_scores = day_scores[day_labels > 0.5]
-        neg_scores = day_scores[day_labels <= 0.5]
-        if pos_scores.numel() == 0 or neg_scores.numel() == 0:
-            continue
-
-        # Logistic pairwise ranking: maximize score(pos) - score(neg).
-        diffs = pos_scores.unsqueeze(1) - neg_scores.unsqueeze(0)
-        per_date_losses.append(torch.nn.functional.softplus(-diffs).mean())
-
-    if not per_date_losses:
-        return None
-    return torch.stack(per_date_losses).mean()
-
-
 def _build_regime_weights(regime_tensor, stress_weight, neutral_weight, bullish_weight):
     regime_tensor = regime_tensor.to(dtype=torch.float32)
     weights = torch.full_like(regime_tensor, fill_value=neutral_weight)
@@ -57,41 +33,24 @@ def train(
     confidence_penalty=0.0,
     regime_robust_training=True,
     regime_stress_weight=1.35,
-    regime_bullish_weight=0.90,
-    objective_mode="classification",
-    rank_loss_weight=1.0,
-    classification_loss_weight=0.25,
-    train_dates=None,
-    val_dates=None,
+    regime_bullish_weight=0.90
 ):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     model.to(device)
 
-    include_dates = objective_mode == "ranking" and train_dates is not None and val_dates is not None
-
-    if include_dates:
-        if regime_train is not None:
-            train_dataset = TensorDataset(X_train, y_train, regime_train, train_dates)
-        else:
-            train_dataset = TensorDataset(X_train, y_train, train_dates)
-        if regime_val is not None:
-            val_dataset = TensorDataset(X_val, y_val, regime_val, val_dates)
-        else:
-            val_dataset = TensorDataset(X_val, y_val, val_dates)
+    if regime_train is not None:
+        train_dataset = TensorDataset(X_train, y_train, regime_train)
     else:
-        if regime_train is not None:
-            train_dataset = TensorDataset(X_train, y_train, regime_train)
-        else:
-            train_dataset = TensorDataset(X_train, y_train)
+        train_dataset = TensorDataset(X_train, y_train)
 
-        if regime_val is not None:
-            val_dataset = TensorDataset(X_val, y_val, regime_val)
-        else:
-            val_dataset = TensorDataset(X_val, y_val)
+    if regime_val is not None:
+        val_dataset = TensorDataset(X_val, y_val, regime_val)
+    else:
+        val_dataset = TensorDataset(X_val, y_val)
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=(objective_mode != "ranking"))
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size)
 
     class_counts = torch.bincount(y_train.detach().cpu(), minlength=2).float()
@@ -127,25 +86,16 @@ def train(
 
         for batch in train_loader:
 
-            if include_dates and regime_robust_training and len(batch) == 4:
-                batch_X, batch_y, batch_regime, batch_dates = batch
-            elif include_dates and len(batch) == 3:
-                batch_X, batch_y, batch_dates = batch
-                batch_regime = None
-            elif regime_robust_training and len(batch) == 3:
+            if regime_robust_training and len(batch) == 3:
                 batch_X, batch_y, batch_regime = batch
-                batch_dates = None
             else:
                 batch_X, batch_y = batch
                 batch_regime = None
-                batch_dates = None
 
             batch_X = batch_X.to(device)
             batch_y = batch_y.to(device)
             if batch_regime is not None:
                 batch_regime = batch_regime.to(device)
-            if batch_dates is not None:
-                batch_dates = batch_dates.to(device)
 
             optimizer.zero_grad()
 
@@ -162,16 +112,7 @@ def train(
                 )
                 sample_loss = sample_loss * regime_weights
 
-            cls_loss = sample_loss.mean()
-            if objective_mode == "ranking" and batch_dates is not None:
-                rank_scores = outputs[:, 1] - outputs[:, 0]
-                rank_loss = _pairwise_rank_loss(rank_scores, batch_y.float(), batch_dates)
-                if rank_loss is not None:
-                    loss = (classification_loss_weight * cls_loss) + (rank_loss_weight * rank_loss)
-                else:
-                    loss = cls_loss
-            else:
-                loss = cls_loss
+            loss = sample_loss.mean()
 
             # Penalize overconfident logits to reduce noisy overtrading downstream.
             if confidence_penalty > 0:
@@ -212,34 +153,17 @@ def train(
 
             for batch in val_loader:
 
-                if include_dates and len(batch) == 4:
-                    batch_X, batch_y, _, batch_dates = batch
-                elif include_dates and len(batch) == 3:
-                    batch_X, batch_y, batch_dates = batch
-                elif len(batch) == 3:
+                if len(batch) == 3:
                     batch_X, batch_y, _ = batch
-                    batch_dates = None
                 else:
                     batch_X, batch_y = batch
-                    batch_dates = None
 
                 batch_X = batch_X.to(device)
                 batch_y = batch_y.to(device)
-                if batch_dates is not None:
-                    batch_dates = batch_dates.to(device)
 
                 outputs = model(batch_X)
 
-                val_cls_loss = criterion(outputs, batch_y).mean()
-                if objective_mode == "ranking" and batch_dates is not None:
-                    val_scores = outputs[:, 1] - outputs[:, 0]
-                    val_rank_loss = _pairwise_rank_loss(val_scores, batch_y.float(), batch_dates)
-                    if val_rank_loss is not None:
-                        loss = (classification_loss_weight * val_cls_loss) + (rank_loss_weight * val_rank_loss)
-                    else:
-                        loss = val_cls_loss
-                else:
-                    loss = val_cls_loss
+                loss = criterion(outputs, batch_y).mean()
 
                 total_val_loss += loss.item()
 

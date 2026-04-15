@@ -1,0 +1,11 @@
+Restore point: regime_stage_current
+Created: 2026-04-09T22:48:20
+
+Rollback command:
+  powershell -ExecutionPolicy Bypass -File "C:\Users\fioli\OneDrive\Desktop\project\tradingAIAgent\ai_trading_agent\restore_points\regime_stage_current_20260409_224820\restore.ps1"
+
+What gets restored:
+  - root code files into workspace root
+  - src module files into src/
+  - selected reports into logs/
+  - model/checkpoint files into models/

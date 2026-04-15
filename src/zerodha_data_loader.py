@@ -125,7 +125,7 @@ def download_data(use_zerodha_live: bool = True):
     # Download yfinance data for historical features
     for ticker in tickers:
         print(f"Downloading {ticker} (yfinance historical)")
-        df = yf.download(ticker, start="2015-01-01", progress=False)
+        df = yf.download(ticker, start="2011-01-01", progress=False)
 
         if df is None or df.empty:
             print(f"Skipping {ticker} (download returned empty data)")
@@ -159,7 +159,7 @@ def download_data(use_zerodha_live: bool = True):
     
     # Download Nifty index
     print("Downloading Nifty index (yfinance)")
-    nifty = yf.download("^NSEI", start="2015-01-01", progress=False)
+    nifty = yf.download("^NSEI", start="2011-01-01", progress=False)
 
     if nifty is None or nifty.empty:
         raise RuntimeError("Failed to download Nifty index (^NSEI) data.")

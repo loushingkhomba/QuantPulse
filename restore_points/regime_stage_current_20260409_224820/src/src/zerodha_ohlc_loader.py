@@ -5,7 +5,6 @@ same-day OHLC snapshot from Zerodha quote endpoints.
 """
 
 import os
-import shutil
 import pandas as pd
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
@@ -43,105 +42,13 @@ def _strip_timezone(value):
     return timestamp
 
 
-def _format_dt(date_value, is_end=False):
-    suffix = "23:59:59" if is_end else "00:00:00"
-    return f"{date_value.strftime('%Y-%m-%d')} {suffix}"
-
-
-def _fetch_candles_chunked(client, instrument_token, start_date, end_date):
-    """Fetch historical candles in smaller windows to avoid API range-limit failures."""
-    base_chunk_days = max(30, int(os.getenv("QUANT_HISTORY_CHUNK_DAYS", "365")))
-    min_chunk_days = max(15, int(os.getenv("QUANT_HISTORY_MIN_CHUNK_DAYS", "30")))
-    all_candles = []
-    cursor = start_date
-
-    while cursor <= end_date:
-        chunk_days = base_chunk_days
-        fetched_chunk = None
-
-        while chunk_days >= min_chunk_days:
-            chunk_end = min(end_date, cursor + timedelta(days=chunk_days - 1))
-            try:
-                candles = client.historical_candles(
-                    instrument_token=instrument_token,
-                    interval="day",
-                    from_date=_format_dt(cursor, is_end=False),
-                    to_date=_format_dt(chunk_end, is_end=True),
-                )
-                fetched_chunk = candles or []
-                break
-            except Exception as e:
-                if chunk_days == min_chunk_days:
-                    print(
-                        "Warning: chunk fetch failed even at min chunk size",
-                        {
-                            "from": cursor.isoformat(),
-                            "to": chunk_end.isoformat(),
-                            "chunk_days": chunk_days,
-                            "error": str(e),
-                        },
-                    )
-                    fetched_chunk = []
-                    break
-
-                next_chunk_days = max(min_chunk_days, chunk_days // 2)
-                print(
-                    "Warning: reducing chunk size after fetch failure",
-                    {
-                        "from": cursor.isoformat(),
-                        "to": chunk_end.isoformat(),
-                        "chunk_days": chunk_days,
-                        "next_chunk_days": next_chunk_days,
-                        "error": str(e),
-                    },
-                )
-                chunk_days = next_chunk_days
-
-        all_candles.extend(fetched_chunk)
-        cursor = min(end_date + timedelta(days=1), cursor + timedelta(days=base_chunk_days))
-
-    return all_candles
-
-
-def _default_project_cache_dir():
-    # Keep cache inside repository root so it is easy to find and reuse.
-    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    return os.path.join(repo_root, "data", "cache")
-
-
-def _legacy_user_cache_dir():
-    local_app_data = os.getenv("LOCALAPPDATA", "").strip()
-    if local_app_data:
-        return os.path.join(local_app_data, "QuantPulse", "cache")
-    return os.path.join(os.path.expanduser("~"), ".quantpulse", "cache")
-
-
 def download_data():
     """
     Download OHLCV data from Zerodha for all tracked stocks.
     Returns DataFrame with Date, Open, High, Low, Close, Adj Close, Volume, Ticker
     
-    Note: Lookback is controlled by QUANT_HISTORY_YEARS and fetched in chunks.
+    Note: Fetches last 5 years of daily data for feature engineering.
     """
-    history_years = max(1, int(os.getenv("QUANT_HISTORY_YEARS", "5")))
-    use_cache = os.getenv("QUANT_USE_DATA_CACHE", "1").strip() == "1"
-    refresh_cache = os.getenv("QUANT_REFRESH_DATA", "0").strip() == "1"
-    cache_dir = os.getenv("QUANT_DATA_CACHE_DIR", _default_project_cache_dir())
-    cache_file = os.path.join(cache_dir, f"zerodha_dataset_{history_years}y.pkl")
-    legacy_user_cache_file = os.path.join(_legacy_user_cache_dir(), f"zerodha_dataset_{history_years}y.pkl")
-
-    if use_cache and (not refresh_cache) and (not os.path.exists(cache_file)) and os.path.exists(legacy_user_cache_file):
-        os.makedirs(cache_dir, exist_ok=True)
-        shutil.copy2(legacy_user_cache_file, cache_file)
-        print(f"Migrated user cache to project cache location: {cache_file}")
-
-    if use_cache and (not refresh_cache) and os.path.exists(cache_file):
-        print(f"Loading cached market data: {cache_file}")
-        cached_data = pd.read_pickle(cache_file)
-        print(f"Cached records: {len(cached_data)}")
-        print(f"Cached date range: {cached_data['Date'].min()} to {cached_data['Date'].max()}")
-        return cached_data
-
     client = get_zerodha_client()
     
     # Map yfinance tickers to NSE symbols
@@ -160,79 +67,64 @@ def download_data():
     
     frames = []
     instrument_cache = {}
-
+    
+    # Calculate date range (5 years back for historical features)
     today = datetime.now().date()
-    fallback_candidates = [history_years, 10, 7, 5, 3, 1]
-    attempt_years_list = []
-    for years in fallback_candidates:
-        years = max(1, int(years))
-        if years not in attempt_years_list:
-            attempt_years_list.append(years)
-
-    actual_years_used = history_years
-    date_str_to = _format_dt(today, is_end=True)
-
-    for attempt_years in attempt_years_list:
-        start_date = today - timedelta(days=365 * attempt_years)
-        date_str_from = _format_dt(start_date, is_end=False)
-        frames = []
-
-        print(f"Fetching Zerodha candles ({attempt_years} years): {date_str_from} to {date_str_to}")
-
-        for yfinance_ticker, nse_symbol in ticker_map.items():
-            try:
-                print(f"Fetching {nse_symbol}...")
-
-                token = client.get_instrument_token(
-                    exchange="NSE",
-                    tradingsymbol=nse_symbol,
-                    cache=instrument_cache
-                )
-
-                candles = _fetch_candles_chunked(
-                    client=client,
-                    instrument_token=token,
-                    start_date=start_date,
-                    end_date=today,
-                )
-
-                if not candles:
-                    print(f"Warning: No candles fetched for {nse_symbol}")
-                    continue
-
-                rows = []
-                for candle in candles:
-                    if len(candle) >= 6:
-                        rows.append({
-                            "Date": candle[0],
-                            "Open": float(candle[1]),
-                            "High": float(candle[2]),
-                            "Low": float(candle[3]),
-                            "Close": float(candle[4]),
-                            "Adj Close": float(candle[4]),
-                            "Volume": int(candle[5]),
-                            "Ticker": yfinance_ticker,
-                        })
-
-                if rows:
-                    df = pd.DataFrame(rows)
-                    df["Date"] = pd.to_datetime(df["Date"])
-                    frames.append(df)
-                    print(f"  OK {len(rows)} candles")
-
-            except Exception as e:
-                print(f"Warning: Failed to fetch {nse_symbol}: {e}")
+    start_date = today - timedelta(days=365*5)
+    # Zerodha API requires time format: yyyy-mm-dd hh:mm:ss
+    date_str_from = start_date.strftime("%Y-%m-%d") + " 00:00:00"
+    date_str_to = today.strftime("%Y-%m-%d") + " 23:59:59"
+    
+    print(f"Fetching Zerodha candles (5 years): {date_str_from} to {date_str_to}")
+    
+    for yfinance_ticker, nse_symbol in ticker_map.items():
+        try:
+            print(f"Fetching {nse_symbol}...")
+            
+            # Get instrument token for NSE symbol
+            token = client.get_instrument_token(
+                exchange="NSE",
+                tradingsymbol=nse_symbol,
+                cache=instrument_cache
+            )
+            
+            # Fetch daily candles
+            candles = client.historical_candles(
+                instrument_token=token,
+                interval="day",
+                from_date=date_str_from,
+                to_date=date_str_to
+            )
+            
+            if not candles:
+                print(f"Warning: No candles fetched for {nse_symbol}")
                 continue
-
-        if frames:
-            actual_years_used = attempt_years
-            if actual_years_used != history_years:
-                print(
-                    f"Requested {history_years} years but Zerodha only returned data for {actual_years_used} years."
-                )
-            break
-
-        print(f"No usable candles for {attempt_years} years, trying a shorter lookback...")
+            
+            # Convert candles to DataFrame
+            # Each candle: [timestamp, open, high, low, close, volume]
+            rows = []
+            for candle in candles:
+                if len(candle) >= 6:
+                    rows.append({
+                        "Date": candle[0],  # ISO format timestamp
+                        "Open": float(candle[1]),
+                        "High": float(candle[2]),
+                        "Low": float(candle[3]),
+                        "Close": float(candle[4]),
+                        "Adj Close": float(candle[4]),  # Use close as adj close
+                        "Volume": int(candle[5]),
+                        "Ticker": yfinance_ticker,
+                    })
+            
+            if rows:
+                df = pd.DataFrame(rows)
+                df["Date"] = pd.to_datetime(df["Date"])
+                frames.append(df)
+                print(f"  OK {len(rows)} candles")
+            
+        except Exception as e:
+            print(f"Warning: Failed to fetch {nse_symbol}: {e}")
+            continue
     
     if not frames:
         raise RuntimeError("No stock data fetched from Zerodha. Check credentials and instrument availability.")
@@ -296,11 +188,11 @@ def download_data():
             )
             print(f"  Found Nifty: {nifty_symbol}")
             
-            nifty_candles = _fetch_candles_chunked(
-                client=client,
+            nifty_candles = client.historical_candles(
                 instrument_token=nifty_token,
-                start_date=start_date,
-                end_date=today,
+                interval="day",
+                from_date=date_str_from,
+                to_date=date_str_to
             )
             
             if nifty_candles:
@@ -366,14 +258,5 @@ def download_data():
 
     # Make sure duplicate ticker/date pairs keep the freshest snapshot row.
     data = data.sort_values(["Ticker", "Date"]).drop_duplicates(subset=["Ticker", "Date"], keep="last")
-
-    if use_cache:
-        os.makedirs(cache_dir, exist_ok=True)
-        data.to_pickle(cache_file)
-        print(f"Saved market data cache: {cache_file}")
-        if actual_years_used != history_years:
-            print(
-                f"Cache contains {actual_years_used}-year data due to API lookback limits for requested {history_years} years."
-            )
     
     return data

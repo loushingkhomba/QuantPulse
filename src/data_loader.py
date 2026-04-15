@@ -4,17 +4,34 @@ import pandas as pd
 
 def download_data():
 
+    # 24 stocks: 20 stable large-caps + 4 aggressive mid-caps
     tickers = [
-        "RELIANCE.NS",
-        "TCS.NS",
-        "INFY.NS",
-        "HDFCBANK.NS",
-        "ICICIBANK.NS",
-        "SBIN.NS",
-        "LT.NS",
-        "ITC.NS",
-        "BHARTIARTL.NS",
-        "HINDUNILVR.NS"
+        # === STABLE LARGE-CAP (Dividend, Liquidity, Lower Volatility) ===
+        "RELIANCE.NS",      # Energy/Conglomerate
+        "TCS.NS",           # IT
+        "INFY.NS",          # IT
+        "HDFCBANK.NS",      # Banking
+        "ICICIBANK.NS",     # Banking
+        "SBIN.NS",          # Banking
+        "LT.NS",            # Capital Goods
+        "ITC.NS",           # Consumer/Tobacco
+        "BHARTIARTL.NS",    # Telecom
+        "HINDUNILVR.NS",    # Consumer
+        "MARUTI.NS",        # Auto
+        "BAJAJFINSV.NS",    # Finance
+        "POWERGRID.NS",     # Power
+        "ADANIPORTS.NS",    # Ports
+        "ASIANPAINT.NS",    # Paint/Chemicals
+        "SUNPHARMA.NS",     # Pharma
+        "AXISBANK.NS",      # Banking
+        "JSWSTEEL.NS",      # Steel
+        "WIPRO.NS",         # IT
+        "NTPC.NS",          # Power
+        # === AGGRESSIVE MID-CAP (Growth, Higher Volatility) ===
+        "TATASTEEL.NS",     # Steel/Cyclicals (growth potential)
+        "ULTRACEMCO.NS",    # Cement (construction exposure)
+        "IDFCFIRSTB.NS",    # Banking (growth-oriented, listed as IDFCFIRSTB)
+        "EICHERMOT.NS",     # Auto/Motorcycles (defensive growth)
     ]
 
     frames = []
@@ -23,7 +40,7 @@ def download_data():
 
         print("Downloading", ticker)
 
-        df = yf.download(ticker, start="2015-01-01")
+        df = yf.download(ticker, start="2011-01-01")
 
         if df is None or df.empty:
             print("Skipping", ticker, "(download returned empty data)")
@@ -45,7 +62,7 @@ def download_data():
     data = pd.concat(frames, ignore_index=True)
 
     # Download Nifty index
-    nifty = yf.download("^NSEI", start="2015-01-01")
+    nifty = yf.download("^NSEI", start="2011-01-01")
 
     if nifty is None or nifty.empty:
         raise RuntimeError("Failed to download Nifty index (^NSEI) data.")
