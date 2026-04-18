@@ -133,6 +133,20 @@ MONTH_TYPE_RUNTIME_ENV = {
     },
 }
 
+# Promoted baseline from 2025 robustness/policy sweep winner.
+# Keep month-specific profile thresholds as-is, but stabilize runtime behavior.
+GLOBAL_RUNTIME_DEFAULTS = {
+    "QUANT_FEATURE_SIGNAL_SCALE": "0.74",
+    "QUANT_REGIME_EXPOSURE_SCALE_BAD": "0.50",
+    "QUANT_TURNOVER_COOLDOWN_DAYS": "2",
+}
+
+# Force winner thresholds after month-profile args so argparse keeps these values.
+PROMOTED_ARG_OVERRIDES = {
+    "QUANT_SIGNAL_SPREAD_BAD": "0.013",
+    "QUANT_MIN_TOP_CONFIDENCE_BAD": "0.53",
+}
+
 CONSTRAINED_POLICY_DEFAULTS = {
     "QUANT_MAX_PER_SECTOR": "1",
     "QUANT_MAX_CONSECUTIVE_DAYS_PER_TICKER": "5",
@@ -162,7 +176,10 @@ def apply_month_type_profile(start: str) -> tuple:
     month = int(start.split("-")[1])
     month_type = MONTH_TYPE_BY_MONTH.get(month, "trend")
     profile_env = MONTH_TYPE_ENV[month_type]
-    runtime_env = MONTH_TYPE_RUNTIME_ENV.get(month_type, {})
+    runtime_env = {
+        **GLOBAL_RUNTIME_DEFAULTS,
+        **MONTH_TYPE_RUNTIME_ENV.get(month_type, {}),
+    }
 
     # Build command-line argument list from profile.
     args = []
@@ -194,6 +211,13 @@ def apply_month_type_profile(start: str) -> tuple:
     
     # Apply constrained policy defaults.
     for env_key, value in CONSTRAINED_POLICY_DEFAULTS.items():
+        if env_key in env_to_arg:
+            arg_name = env_to_arg[env_key]
+            args.extend([f"--{arg_name}", str(value)])
+            applied[env_key] = value
+
+    # Append promoted overrides last so they win over month-type profile values.
+    for env_key, value in PROMOTED_ARG_OVERRIDES.items():
         if env_key in env_to_arg:
             arg_name = env_to_arg[env_key]
             args.extend([f"--{arg_name}", str(value)])

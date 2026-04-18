@@ -2,7 +2,14 @@ import numpy as np
 from sklearn.preprocessing import StandardScaler
 
 
-def prepare_dataset(df, sequence_length=20, test_fraction=0.2, split_date=None, return_regime_state=False):
+def prepare_dataset(
+    df,
+    sequence_length=20,
+    test_fraction=0.2,
+    split_date=None,
+    return_regime_state=False,
+    return_train_tickers=False,
+):
 
     features = [
         "returns",
@@ -10,14 +17,14 @@ def prepare_dataset(df, sequence_length=20, test_fraction=0.2, split_date=None, 
         "ma20_ma50_ratio",
         "ma50_ma200_ratio",
         "volatility",
-        "rsi",
-        "momentum",
-        "volume_ema",
+        "xs_rsi_rank",
+        "xs_momentum_rank",
+        "xs_volume_ema_rank",
         "nifty_return",
-        "distance_from_52w_high",
-        "rs_vs_nifty",
-        "rs_vs_nifty_20d",
-        "volume_spike",
+        "xs_distance_from_52w_high_rank",
+        "xs_rs_vs_nifty_rank",
+        "xs_rs_vs_nifty_20d_rank",
+        "xs_volume_spike_rank",
         "nifty_trend",
         "market_volatility",
         "market_volatility_60d",
@@ -26,12 +33,19 @@ def prepare_dataset(df, sequence_length=20, test_fraction=0.2, split_date=None, 
         "nifty_slope_20",
         "adx_14",
         "trend_strength",
-        "regime_state"
+        "regime_state",
+        "xs_return_rank",
+        "xs_overnight_gap_rank",
+        "xs_volume_surprise_rank",
+        "xs_return_over_atr14_rank",
+        "nifty_atr_range_pct",
+        "regime_safety_strict",
     ]
 
     sequences_train = []
     labels_train = []
     dates_train = []
+    tickers_train = []
     regimes_train = []
     sequences_test = []
     labels_test = []
@@ -82,6 +96,7 @@ def prepare_dataset(df, sequence_length=20, test_fraction=0.2, split_date=None, 
                 sequences_train.append(seq)
                 labels_train.append(label)
                 dates_train.append(label_date)
+                tickers_train.append(ticker)
                 regimes_train.append(regime_state)
             else:
                 sequences_test.append(seq)
@@ -93,6 +108,7 @@ def prepare_dataset(df, sequence_length=20, test_fraction=0.2, split_date=None, 
     X_train = np.array(sequences_train)
     y_train = np.array(labels_train)
     dates_train = np.array(dates_train)
+    tickers_train = np.array(tickers_train)
     regimes_train = np.array(regimes_train)
     X_test = np.array(sequences_test)
     y_test = np.array(labels_test)
@@ -100,7 +116,24 @@ def prepare_dataset(df, sequence_length=20, test_fraction=0.2, split_date=None, 
     dates_test = np.array(dates_test)
     regimes_test = np.array(regimes_test)
 
+    if return_regime_state and return_train_tickers:
+        return (
+            X_train,
+            X_test,
+            y_train,
+            y_test,
+            dates_train,
+            tickers_train,
+            tickers_test,
+            dates_test,
+            regimes_train,
+            regimes_test,
+        )
+
     if return_regime_state:
         return X_train, X_test, y_train, y_test, dates_train, tickers_test, dates_test, regimes_train, regimes_test
+
+    if return_train_tickers:
+        return X_train, X_test, y_train, y_test, dates_train, tickers_train, tickers_test, dates_test
 
     return X_train, X_test, y_train, y_test, dates_train, tickers_test, dates_test

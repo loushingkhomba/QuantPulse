@@ -6,20 +6,6 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from scipy.stats import spearmanr
-from sklearn.calibration import CalibratedClassifierCV
-from sklearn.ensemble import GradientBoostingClassifier
-from sklearn.linear_model import RidgeClassifier
-
-try:
-    from xgboost import XGBClassifier
-except ImportError:
-    XGBClassifier = None
-
-try:
-    import shap
-except ImportError:
-    shap = None
 
 from src.zerodha_ohlc_loader import download_data
 from src.features import create_features
@@ -30,77 +16,23 @@ from src.regime_experts import fit_regime_experts, apply_regime_expert_probs
 from src.flip_risk import fit_flip_risk_model
 from src.trainer import train
 from src.backtest import calculate_metrics
-from src.constants import FROZEN_OBJECTIVE_V1_PARAMS, enforce_objective_freeze
-
-
-for _freeze_key, _freeze_value in FROZEN_OBJECTIVE_V1_PARAMS.items():
-    os.environ.setdefault(_freeze_key, _freeze_value)
-
-OBJECTIVE_FREEZE_META = enforce_objective_freeze(strict=True)
-print(
-    "Objective freeze:",
-    {
-        "name": OBJECTIVE_FREEZE_META["freeze_name"],
-        "hash": OBJECTIVE_FREEZE_META["current_hash"],
-        "ok": OBJECTIVE_FREEZE_META["ok"],
-    },
-)
 
 MODEL_PATH = "models/quantpulse_model.pth"
 CHECKPOINT_PATH = "models/quantpulse_checkpoint.pth"
 RESUME_TRAINING = False
 MODEL_TYPE = "simple"  # "lstm", "mlp", or "simple" (simple recommended for robustness)
 TEST_FRACTION = 0.20
-SIMPLE_HIDDEN_SIZE = int(os.getenv("QUANT_SIMPLE_HIDDEN_SIZE", "32"))
-MLP_HIDDEN_SIZE = int(os.getenv("QUANT_MLP_HIDDEN_SIZE", "64"))
-LSTM_HIDDEN_SIZE = int(os.getenv("QUANT_LSTM_HIDDEN_SIZE", "48"))
 OBJECTIVE_MODE = os.getenv("QUANT_OBJECTIVE_MODE", "classification").strip().lower()
 TRAIN_EPOCHS = int(os.getenv("QUANT_TRAIN_EPOCHS", "40"))
 TRAIN_PATIENCE = int(os.getenv("QUANT_TRAIN_PATIENCE", "10"))
 RANK_LOSS_WEIGHT = float(os.getenv("QUANT_RANK_LOSS_WEIGHT", "1.0"))
 CLS_LOSS_WEIGHT = float(os.getenv("QUANT_CLASSIFICATION_LOSS_WEIGHT", "0.25"))
-FP_COST_MULTIPLIER = float(os.getenv("QUANT_FP_COST_MULTIPLIER", "0.0"))
-FP_COST_POWER = float(os.getenv("QUANT_FP_COST_POWER", "2.0"))
-FP_COST_THRESHOLD = float(os.getenv("QUANT_FP_COST_THRESHOLD", "0.55"))
-FP_COST_GATE_SHARPNESS = float(os.getenv("QUANT_FP_COST_GATE_SHARPNESS", "20.0"))
 SEED = int(os.getenv("QUANT_SEED", "42"))
 ENSEMBLE_SEEDS_ENV = os.getenv("QUANT_ENSEMBLE_SEEDS", "42,123,777")
 if ENSEMBLE_SEEDS_ENV.strip():
     ENSEMBLE_SEEDS = [int(x.strip()) for x in ENSEMBLE_SEEDS_ENV.split(",") if x.strip()]
 else:
     ENSEMBLE_SEEDS = [42, 123, 777]
-
-# Must match feature order in src/dataset.py for SHAP-based pruning to stay aligned.
-DATASET_FEATURE_COLUMNS = [
-    "returns",
-    "ma10_ma50_ratio",
-    "ma20_ma50_ratio",
-    "ma50_ma200_ratio",
-    "volatility",
-    "xs_rsi_rank",
-    "xs_momentum_rank",
-    "xs_volume_ema_rank",
-    "nifty_return",
-    "xs_distance_from_52w_high_rank",
-    "xs_rs_vs_nifty_rank",
-    "xs_rs_vs_nifty_20d_rank",
-    "xs_volume_spike_rank",
-    "nifty_trend",
-    "market_volatility",
-    "market_volatility_60d",
-    "volatility_regime",
-    "nifty_drawdown_63d",
-    "nifty_slope_20",
-    "adx_14",
-    "trend_strength",
-    "regime_state",
-    "xs_return_rank",
-    "xs_overnight_gap_rank",
-    "xs_volume_surprise_rank",
-    "xs_return_over_atr14_rank",
-    "nifty_atr_range_pct",
-    "regime_safety_strict",
-]
 
 
 def parse_args():
@@ -208,181 +140,10 @@ def apply_temperature_scaler(raw_probs, temperature):
     logits = _safe_logit(raw_probs)
     return _sigmoid(logits / float(max(temperature, 1e-6)))
 
-
-def _select_features_for_hybrid(X_tr_np, y_tr_np, feature_names, seed):
-    enabled = os.getenv("QUANT_SHAP_FEATURE_SELECTION_ENABLED", "1").strip() == "1"
-    top_k = int(os.getenv("QUANT_SHAP_TOP_K", "16"))
-    min_keep = max(3, int(os.getenv("QUANT_SHAP_MIN_FEATURES", "8")))
-    sample_rows = max(100, int(os.getenv("QUANT_SHAP_SAMPLE_ROWS", "2000")))
-
-    total_features = X_tr_np.shape[1]
-    fallback_idx = np.arange(total_features)
-    meta = {
-        "enabled": enabled,
-        "used": False,
-        "reason": "disabled",
-        "total_features": int(total_features),
-        "kept_features": int(total_features),
-        "selected_feature_names": list(feature_names),
-    }
-
-    if (not enabled) or total_features <= min_keep:
-        return fallback_idx, meta
-
-    if XGBClassifier is None:
-        meta["reason"] = "xgboost_not_installed"
-        return fallback_idx, meta
-
-    rng = np.random.RandomState(seed + 404)
-    if len(X_tr_np) > sample_rows:
-        sample_idx = rng.choice(len(X_tr_np), size=sample_rows, replace=False)
-        X_fit = X_tr_np[sample_idx]
-        y_fit = y_tr_np[sample_idx]
-    else:
-        X_fit = X_tr_np
-        y_fit = y_tr_np
-
-    probe = XGBClassifier(
-        n_estimators=max(80, int(os.getenv("QUANT_SHAP_XGB_ESTIMATORS", "120"))),
-        learning_rate=float(os.getenv("QUANT_SHAP_XGB_LEARNING_RATE", "0.05")),
-        max_depth=max(2, int(os.getenv("QUANT_SHAP_XGB_MAX_DEPTH", "3"))),
-        subsample=float(os.getenv("QUANT_SHAP_XGB_SUBSAMPLE", "0.85")),
-        colsample_bytree=float(os.getenv("QUANT_SHAP_XGB_COLSAMPLE", "0.85")),
-        reg_lambda=float(os.getenv("QUANT_SHAP_XGB_REG_LAMBDA", "1.0")),
-        random_state=seed,
-        eval_metric="logloss",
-    )
-    probe.fit(X_fit, y_fit)
-
-    if shap is None:
-        importance = np.asarray(probe.feature_importances_, dtype=np.float64)
-        meta_reason = "shap_not_installed_used_gain_importance"
-    else:
-        explainer = shap.TreeExplainer(probe)
-        shap_values = explainer.shap_values(X_fit)
-        if isinstance(shap_values, list):
-            shap_array = np.asarray(shap_values[1], dtype=np.float64)
-        else:
-            shap_array = np.asarray(shap_values, dtype=np.float64)
-        if shap_array.ndim == 3:
-            shap_array = shap_array[:, :, 1]
-        importance = np.abs(shap_array).mean(axis=0)
-        meta_reason = "ok"
-
-    if importance.ndim != 1 or len(importance) != total_features:
-        meta["reason"] = "importance_shape_mismatch"
-        return fallback_idx, meta
-
-    effective_top_k = max(min_keep, min(total_features, top_k))
-    selected_idx = np.argsort(-importance)[:effective_top_k]
-    selected_idx = np.sort(selected_idx)
-
-    selected_features = [feature_names[idx] for idx in selected_idx]
-    meta.update(
-        {
-            "used": True,
-            "reason": meta_reason,
-            "kept_features": int(len(selected_idx)),
-            "selected_feature_names": selected_features,
-        }
-    )
-    return selected_idx, meta
-
-
-def build_hybrid_ensemble_probs(X_tr_tensor, y_tr_tensor, X_val_tensor, y_val_tensor, X_test_tensor, seed):
-    """Train Ridge+XGBoost hybrid classifiers and return blended probabilities."""
-    X_tr_np = X_tr_tensor[:, -1, :].detach().cpu().numpy()
-    y_tr_np = y_tr_tensor.detach().cpu().numpy()
-    X_val_np = X_val_tensor[:, -1, :].detach().cpu().numpy()
-    X_test_np = X_test_tensor[:, -1, :].detach().cpu().numpy()
-
-    ridge_alpha = float(os.getenv("QUANT_RIDGE_ALPHA", "1.0"))
-    gb_estimators = int(os.getenv("QUANT_GB_ESTIMATORS", "180"))
-    gb_lr = float(os.getenv("QUANT_GB_LEARNING_RATE", "0.05"))
-    gb_depth = int(os.getenv("QUANT_GB_MAX_DEPTH", "3"))
-    gb_subsample = float(os.getenv("QUANT_GB_SUBSAMPLE", "0.85"))
-    gb_weight = float(os.getenv("QUANT_HYBRID_GB_WEIGHT", "0.60"))
-    ridge_weight = float(os.getenv("QUANT_HYBRID_RIDGE_WEIGHT", "0.40"))
-    total_weight = max(1e-9, gb_weight + ridge_weight)
-    gb_weight = gb_weight / total_weight
-    ridge_weight = ridge_weight / total_weight
-
-    feature_names = DATASET_FEATURE_COLUMNS[: X_tr_np.shape[1]]
-    selected_idx, shap_meta = _select_features_for_hybrid(
-        X_tr_np,
-        y_tr_np,
-        feature_names=feature_names,
-        seed=seed,
-    )
-    X_tr_np = X_tr_np[:, selected_idx]
-    X_val_np = X_val_np[:, selected_idx]
-    X_test_np = X_test_np[:, selected_idx]
-
-    ridge_base = RidgeClassifier(alpha=ridge_alpha, random_state=seed)
-    ridge = CalibratedClassifierCV(ridge_base, method="sigmoid", cv=3)
-    ridge.fit(X_tr_np, y_tr_np)
-
-    xgb_enabled = os.getenv("QUANT_XGBOOST_ENABLED", "1").strip() == "1"
-    if xgb_enabled and XGBClassifier is not None:
-        booster = XGBClassifier(
-            n_estimators=gb_estimators,
-            learning_rate=gb_lr,
-            max_depth=gb_depth,
-            subsample=gb_subsample,
-            colsample_bytree=float(os.getenv("QUANT_XGB_COLSAMPLE", "0.85")),
-            reg_lambda=float(os.getenv("QUANT_XGB_REG_LAMBDA", "1.0")),
-            random_state=seed,
-            eval_metric="logloss",
-        )
-        booster_name = "xgboost"
-    else:
-        booster = GradientBoostingClassifier(
-            n_estimators=gb_estimators,
-            learning_rate=gb_lr,
-            max_depth=gb_depth,
-            subsample=gb_subsample,
-            random_state=seed,
-        )
-        booster_name = "gradient_boosting"
-    booster.fit(X_tr_np, y_tr_np)
-
-    ridge_val = ridge.predict_proba(X_val_np)[:, 1]
-    gb_val = booster.predict_proba(X_val_np)[:, 1]
-    ridge_test = ridge.predict_proba(X_test_np)[:, 1]
-    gb_test = booster.predict_proba(X_test_np)[:, 1]
-
-    return {
-        "val_probs": (gb_weight * gb_val) + (ridge_weight * ridge_val),
-        "test_probs": (gb_weight * gb_test) + (ridge_weight * ridge_test),
-        "weights": {"gb": gb_weight, "ridge": ridge_weight},
-        "booster": booster_name,
-        "feature_selection": shap_meta,
-    }
-
 print("Starting training for QuantPulse model...")
 print("Seed:", SEED)
 print("Ensemble seeds:", ENSEMBLE_SEEDS)
 print("Objective mode:", OBJECTIVE_MODE)
-print(
-    "Target setup:",
-    {
-        "mode": os.getenv("QUANT_TARGET_MODE", "alpha").strip().lower(),
-        "horizon_days": int(os.getenv("QUANT_TARGET_HORIZON_DAYS", "5")),
-        "alpha_threshold": float(os.getenv("QUANT_TARGET_ALPHA_THRESHOLD", "0.005")),
-        "absolute_threshold": float(os.getenv("QUANT_TARGET_ABS_THRESHOLD", "0.0")),
-        "cost_bps": float(os.getenv("QUANT_TARGET_COST_BPS", "0.0")),
-    },
-)
-print(
-    "Transaction-aware FP cost:",
-    {
-        "multiplier": FP_COST_MULTIPLIER,
-        "power": FP_COST_POWER,
-        "threshold": FP_COST_THRESHOLD,
-        "gate_sharpness": FP_COST_GATE_SHARPNESS,
-    },
-)
-print("Hidden sizes:", {"simple": SIMPLE_HIDDEN_SIZE, "mlp": MLP_HIDDEN_SIZE, "lstm": LSTM_HIDDEN_SIZE})
 print("Regime-robust training:", os.getenv("QUANT_REGIME_ROBUST_TRAINING", "1").strip() == "1")
 if ARGS.backtest_only:
     print("Backtest-only mode: loading existing checkpoints and evaluating on the requested window.")
@@ -490,34 +251,18 @@ tickers_train_all = tickers_train_all.iloc[sort_idx].reset_index(drop=True)
 
 train_unique_dates = np.sort(dates_train.unique())
 val_cutoff = train_unique_dates[int(len(train_unique_dates) * 0.8)]
-purged_wf_enabled = os.getenv("QUANT_PURGED_WF_ENABLED", "0").strip() == "1"
-purge_days = max(0, int(os.getenv("QUANT_PURGE_DAYS", "0")))
-
-if purged_wf_enabled and purge_days > 0:
-    purge_cutoff = pd.to_datetime(val_cutoff) - pd.Timedelta(days=purge_days)
-    is_train = dates_train < purge_cutoff
-    is_val = dates_train >= pd.to_datetime(val_cutoff)
-    # Fallback if purge made train or val empty.
-    if is_train.sum() == 0 or is_val.sum() == 0:
-        is_train = dates_train < val_cutoff
-        is_val = ~is_train
-        print("Purged split fallback: insufficient rows after purge.")
-    else:
-        print("Purged split enabled:", {"val_start": str(pd.to_datetime(val_cutoff).date()), "purge_days": purge_days})
-else:
-    is_train = dates_train < val_cutoff
-    is_val = ~is_train
+is_train = dates_train < val_cutoff
 
 X_tr = torch.tensor(X_train[is_train.values].copy(), dtype=torch.float32)
 y_tr = torch.tensor(y_train[is_train.values].copy(), dtype=torch.long)
 train_dates = dates_train[is_train.values]
 regime_tr = torch.tensor(regime_train[is_train.values].to_numpy(copy=True), dtype=torch.long)
 
-X_val = torch.tensor(X_train[is_val.values].copy(), dtype=torch.float32)
-y_val = torch.tensor(y_train[is_val.values].copy(), dtype=torch.long)
-val_dates = dates_train[is_val.values]
-val_tickers = tickers_train_all[is_val.values].reset_index(drop=True)
-regime_val = torch.tensor(regime_train[is_val.values].to_numpy(copy=True), dtype=torch.long)
+X_val = torch.tensor(X_train[~is_train.values].copy(), dtype=torch.float32)
+y_val = torch.tensor(y_train[~is_train.values].copy(), dtype=torch.long)
+val_dates = dates_train[~is_train.values]
+val_tickers = tickers_train_all[~is_train.values].reset_index(drop=True)
+regime_val = torch.tensor(regime_train[~is_train.values].to_numpy(copy=True), dtype=torch.long)
 
 X_test = torch.tensor(X_test.copy(), dtype=torch.float32)
 
@@ -618,11 +363,11 @@ if signal_mode == "model":
         print("Validation samples for this member:", len(X_val_loop))
 
         if MODEL_TYPE == "simple":
-            model = QuantPulseSimple(input_size=X_tr_loop.shape[2], hidden_size=SIMPLE_HIDDEN_SIZE)
+            model = QuantPulseSimple(input_size=X_tr_loop.shape[2])
         elif MODEL_TYPE == "mlp":
-            model = QuantPulseMLP(input_size=X_tr_loop.shape[2], hidden_size=MLP_HIDDEN_SIZE)
+            model = QuantPulseMLP(input_size=X_tr_loop.shape[2])
         else:
-            model = QuantPulse(input_size=X_tr_loop.shape[2], hidden_size=LSTM_HIDDEN_SIZE)
+            model = QuantPulse(input_size=X_tr_loop.shape[2])
 
         model.to(device)
         print("Model type:", MODEL_TYPE.upper())
@@ -667,10 +412,6 @@ if signal_mode == "model":
                 objective_mode=OBJECTIVE_MODE,
                 rank_loss_weight=RANK_LOSS_WEIGHT,
                 classification_loss_weight=CLS_LOSS_WEIGHT,
-                false_positive_cost_multiplier=FP_COST_MULTIPLIER,
-                false_positive_cost_power=FP_COST_POWER,
-                false_positive_cost_threshold=FP_COST_THRESHOLD,
-                false_positive_cost_gate_sharpness=FP_COST_GATE_SHARPNESS,
                 train_dates=train_dates_loop_tensor if OBJECTIVE_MODE == "ranking" else None,
                 val_dates=val_dates_loop_tensor if OBJECTIVE_MODE == "ranking" else None,
             )
@@ -706,33 +447,6 @@ if signal_mode == "model":
                 "confidence": validation_confidence,
             }
         )
-
-    hybrid_enabled = os.getenv("QUANT_HYBRID_ENSEMBLE_ENABLED", "0").strip() == "1"
-    if hybrid_enabled and len(X_tr) > 0 and len(X_val) > 0 and len(X_test) > 0:
-        try:
-            hybrid_out = build_hybrid_ensemble_probs(X_tr, y_tr, X_val, y_val, X_test.cpu(), SEED)
-            hybrid_blend_weight = float(os.getenv("QUANT_HYBRID_BLEND_WEIGHT", "0.35"))
-            hybrid_blend_weight = min(max(hybrid_blend_weight, 0.0), 1.0)
-            confidence = ((1.0 - hybrid_blend_weight) * confidence) + (hybrid_blend_weight * hybrid_out["test_probs"])
-            if validation_confidence is not None:
-                validation_confidence = ((1.0 - hybrid_blend_weight) * validation_confidence) + (
-                    hybrid_blend_weight * hybrid_out["val_probs"]
-                )
-                if not validation_gate_history.empty:
-                    validation_gate_history = validation_gate_history.copy()
-                    validation_gate_history["confidence"] = validation_confidence
-            print(
-                "Hybrid ensemble blend enabled:",
-                {
-                    "blend_weight": hybrid_blend_weight,
-                    "component_weights": hybrid_out["weights"],
-                    "booster": hybrid_out.get("booster"),
-                    "feature_selection": hybrid_out.get("feature_selection"),
-                },
-            )
-        except Exception as hybrid_error:
-            print("Hybrid ensemble failed; continuing with base model:", str(hybrid_error))
-
     print("\nEnsemble members:", len(ENSEMBLE_SEEDS))
     print("Averaged confidence signal generated.")
 elif signal_mode == "momentum":
@@ -829,8 +543,6 @@ price_df = data.reset_index()[[
     "volatility_regime",
     "nifty_drawdown_63d",
     "trend_strength",
-    "nifty_atr_range_pct",
-    "regime_safety_strict",
 ]]
 optional_price_cols = ["rs_vs_nifty", "momentum", "rsi", "volume_spike"]
 for optional_col in optional_price_cols:
@@ -997,17 +709,14 @@ if feature_signal_enabled:
 
 # SORT BY DATE (VERY IMPORTANT)
 pred_df = pred_df.sort_values("date").reset_index(drop=True)
-baseline_universe_by_date = pred_df.groupby("date")["ticker"].nunique().to_dict()
 
 # -------------------------------------------------
 # PARAMETERS
 # -------------------------------------------------
 
 initial_capital = 10000
-holding = max(1, int(os.getenv("QUANT_HOLDING_DAYS", os.getenv("QUANT_TARGET_HORIZON_DAYS", "5"))))
-top_k = max(1, int(os.getenv("QUANT_TOP_K", "3")))
-min_daily_universe_size = int(os.getenv("QUANT_MIN_DAILY_UNIVERSE_SIZE", "0"))
-min_daily_universe_fraction = float(os.getenv("QUANT_MIN_DAILY_UNIVERSE_FRACTION", "0.0"))
+holding = 5
+top_k = 3
 stop_loss = -0.03
 max_daily_loss = -0.02
 max_drawdown_limit = -0.35
@@ -1021,7 +730,7 @@ min_rank_threshold = 0.60
 turnover_min_new_positions = (
     ARGS.max_new_positions_per_day
     if ARGS.max_new_positions_per_day is not None
-    else int(os.getenv("QUANT_MAX_NEW_POSITIONS_PER_DAY", "1"))
+    else int(os.getenv("QUANT_MAX_NEW_POSITIONS_PER_DAY", "2"))
 )
 turnover_cooldown_days = int(os.getenv("QUANT_TURNOVER_COOLDOWN_DAYS", "1"))
 aggression_clip_low = float(os.getenv("QUANT_AGGRESSION_CLIP_LOW", "0.40"))
@@ -1066,45 +775,32 @@ rank_threshold_trending = (
 spread_threshold_bad = (
     ARGS.signal_spread_bad
     if ARGS.signal_spread_bad is not None
-    else float(os.getenv("QUANT_SIGNAL_SPREAD_BAD", "0.006"))
+    else float(os.getenv("QUANT_SIGNAL_SPREAD_BAD", "0.012"))
 )
 spread_threshold_neutral = (
     ARGS.signal_spread_neutral
     if ARGS.signal_spread_neutral is not None
-    else float(os.getenv("QUANT_SIGNAL_SPREAD_NEUTRAL", "0.005"))
+    else float(os.getenv("QUANT_SIGNAL_SPREAD_NEUTRAL", "0.010"))
 )
 spread_threshold_trending = (
     ARGS.signal_spread_trending
     if ARGS.signal_spread_trending is not None
-    else float(os.getenv("QUANT_SIGNAL_SPREAD_TRENDING", "0.004"))
+    else float(os.getenv("QUANT_SIGNAL_SPREAD_TRENDING", "0.008"))
 )
-
-strict_spread_threshold_bad = float(os.getenv("QUANT_STRICT_SIGNAL_SPREAD_BAD", "0.012"))
-strict_spread_threshold_neutral = float(os.getenv("QUANT_STRICT_SIGNAL_SPREAD_NEUTRAL", "0.010"))
-strict_spread_threshold_trending = float(os.getenv("QUANT_STRICT_SIGNAL_SPREAD_TRENDING", "0.008"))
-regime_safety_enabled = os.getenv("QUANT_REGIME_SAFETY_ENABLED", "1").strip() == "1"
-strict_kelly_breakeven = float(os.getenv("QUANT_KELLY_BREAKEVEN_STRICT", "0.52"))
 
 min_top_confidence = (
     ARGS.min_top_confidence
     if ARGS.min_top_confidence is not None
-    else float(os.getenv("QUANT_MIN_TOP_CONFIDENCE", "0.53"))
+    else float(os.getenv("QUANT_MIN_TOP_CONFIDENCE", "0.52"))
 )
 min_top_confidence_bad = (
     ARGS.min_top_confidence_bad
     if ARGS.min_top_confidence_bad is not None
-    else float(os.getenv("QUANT_MIN_TOP_CONFIDENCE_BAD", "0.58"))
+    else float(os.getenv("QUANT_MIN_TOP_CONFIDENCE_BAD", "0.52"))
 )
-min_top_confidence_trending = float(
-    os.getenv("QUANT_MIN_TOP_CONFIDENCE_TRENDING", str(min_top_confidence))
-)
-disable_bullish_trades = os.getenv("QUANT_DISABLE_BULLISH_TRADES", "0").strip() == "1"
 
 fallback_conf_threshold_bad = float(os.getenv("QUANT_FALLBACK_CONF_THRESHOLD_BAD", str(min_top_confidence_bad)))
 fallback_reduce_factor_bad = float(os.getenv("QUANT_FALLBACK_REDUCE_FACTOR_BAD", "0.50"))
-signal_inversion_mode = os.getenv("QUANT_SIGNAL_INVERSION_MODE", "auto").strip().lower()
-disable_high_vol_trades = os.getenv("QUANT_DISABLE_HIGH_VOL_TRADES", "0").strip() == "1"
-high_vol_exposure_scale = float(os.getenv("QUANT_HIGH_VOL_EXPOSURE_SCALE", "1.0"))
 
 # Targeted 2021 defense controls (bad regime only).
 regime_exposure_scale_bad = float(os.getenv("QUANT_REGIME_EXPOSURE_SCALE_BAD", "0.60"))
@@ -1500,22 +1196,13 @@ print("Weight temperature:", weight_temperature)
 print("Fallback confidence threshold:", fallback_conf_threshold)
 print("Fallback reduce factor:", fallback_reduce_factor)
 print("Adaptive regime logic:", adaptive_regime_logic)
-print("Regime safety layer:", {"enabled": regime_safety_enabled, "strict_trigger_pct": float(os.getenv("QUANT_REGIME_SAFETY_STRICT_PCT", "0.80"))})
 print("Bad regime cutoffs:", {"volatility": bad_volatility_cutoff, "drawdown": bad_drawdown_cutoff})
 print("Rank thresholds by regime:", {"bad": rank_threshold_bad, "neutral": rank_threshold_neutral, "trending": rank_threshold_trending})
 print("Signal spread thresholds by regime:", {"bad": spread_threshold_bad, "neutral": spread_threshold_neutral, "trending": spread_threshold_trending})
-print("Strict signal spread thresholds:", {"bad": strict_spread_threshold_bad, "neutral": strict_spread_threshold_neutral, "trending": strict_spread_threshold_trending})
-print("Min top confidence:", {"default": min_top_confidence, "bad": min_top_confidence_bad, "trending": min_top_confidence_trending})
+print("Min top confidence:", {"default": min_top_confidence, "bad": min_top_confidence_bad})
 print("Bad regime exposure scale:", regime_exposure_scale_bad)
 print("Kill-switch drawdown threshold:", kill_switch_drawdown_threshold)
 print("Kill-switch max new positions:", kill_switch_max_new_positions)
-print("Top K:", top_k)
-print("Min daily universe size:", min_daily_universe_size if min_daily_universe_size > 0 else "disabled")
-print("Min daily universe fraction:", min_daily_universe_fraction if min_daily_universe_fraction > 0 else "disabled")
-print("Signal inversion mode:", signal_inversion_mode)
-print("Disable bullish trades:", disable_bullish_trades)
-print("Disable high-vol trades:", disable_high_vol_trades)
-print("High-vol exposure scale:", high_vol_exposure_scale)
 print("Max names per sector:", max_per_sector if max_per_sector > 0 else "disabled")
 print(
     "Max consecutive days per ticker:",
@@ -1523,7 +1210,6 @@ print(
 )
 print("Trade budget mode:", trade_budget_mode)
 print("Max trades per window:", max_trades_per_window if max_trades_per_window > 0 else "disabled")
-print("Regime gate hidden size:", int(os.getenv("QUANT_REGIME_HIDDEN_SIZE", "64")))
 print("Trade acceptance gate:", trade_acceptance_meta)
 print("Regime experts gate:", regime_experts_meta)
 print("Flip-risk filter:", flip_risk_meta)
@@ -1574,7 +1260,6 @@ def run_backtest(
         "empty_today": 0,
         "empty_after_universe_intersection": 0,
         "no_candidates_after_rank": 0,
-        "blocked_by_thin_universe": 0,
         "no_rows_after_turnover_cooldown": 0,
         "blocked_by_trade_acceptance": 0,
         "blocked_by_regime_expert": 0,
@@ -1583,59 +1268,12 @@ def run_backtest(
         "spread_below_threshold": 0,
         "top_conf_below_threshold": 0,
         "blocked_by_concentration_cap": 0,
-        "blocked_by_high_vol_filter": 0,
         "trade_budget_exhausted": 0,
         "no_next_price_for_selected": 0,
         "active_weight_zero": 0,
-        "blocked_by_ic_breaker": 0,
-        "blocked_by_kelly_floor": 0,
-        "blocked_by_regime_exposure_scale": 0,
     }
     trade_records = []
     day_records = []
-
-    ic_breaker_enabled = os.getenv("QUANT_IC_BREAKER_ENABLED", "0").strip() == "1"
-    ic_breaker_lookback = max(2, int(os.getenv("QUANT_IC_BREAKER_LOOKBACK_DAYS", "5")))
-    ic_breaker_min_ic = float(os.getenv("QUANT_IC_BREAKER_MIN_IC", "0.02"))
-    ic_breaker_max_p = float(os.getenv("QUANT_IC_BREAKER_MAX_P", "0.10"))
-    ic_breaker_recover_lookback = max(2, int(os.getenv("QUANT_IC_BREAKER_RECOVER_DAYS", "10")))
-    ic_breaker_recover_ic = float(os.getenv("QUANT_IC_BREAKER_RECOVER_IC", "0.03"))
-    ic_breaker_recover_p = float(os.getenv("QUANT_IC_BREAKER_RECOVER_P", "0.05"))
-
-    kelly_lite_enabled = os.getenv("QUANT_KELLY_LITE_ENABLED", "0").strip() == "1"
-    kelly_fraction = float(os.getenv("QUANT_KELLY_FRACTION", "0.20"))
-    kelly_breakeven = float(os.getenv("QUANT_KELLY_BREAKEVEN", "0.50"))
-    kelly_cap = float(os.getenv("QUANT_KELLY_CAP", "0.35"))
-    
-    # Volatility-based exposure scaling (replaces binary cool-off).
-    volatility_history = []
-
-    ic_breaker_active = False
-    ic_monitor_by_date = {}
-    if ic_breaker_enabled and f"future_return_1d" in frame.columns and conf_col != "random_confidence":
-        ic_rows = []
-        for ic_date, ic_group in frame.groupby("date"):
-            valid = ic_group[[conf_col, "future_return_1d"]].dropna()
-            if len(valid) < 3:
-                continue
-            ic_value, p_value = spearmanr(valid[conf_col].to_numpy(), valid["future_return_1d"].to_numpy())
-            if np.isfinite(ic_value) and np.isfinite(p_value):
-                ic_rows.append({"date": pd.Timestamp(ic_date), "ic": float(ic_value), "p": float(p_value)})
-        if ic_rows:
-            ic_df = pd.DataFrame(ic_rows).sort_values("date").reset_index(drop=True)
-            ic_df["ic_roll"] = ic_df["ic"].rolling(ic_breaker_lookback, min_periods=ic_breaker_lookback).mean()
-            ic_df["p_roll"] = ic_df["p"].rolling(ic_breaker_lookback, min_periods=ic_breaker_lookback).mean()
-            ic_df["ic_recover"] = ic_df["ic"].rolling(ic_breaker_recover_lookback, min_periods=ic_breaker_recover_lookback).mean()
-            ic_df["p_recover"] = ic_df["p"].rolling(ic_breaker_recover_lookback, min_periods=ic_breaker_recover_lookback).mean()
-            ic_monitor_by_date = {
-                pd.Timestamp(row["date"]): {
-                    "ic_roll": _safe_float(row["ic_roll"]),
-                    "p_roll": _safe_float(row["p_roll"]),
-                    "ic_recover": _safe_float(row["ic_recover"]),
-                    "p_recover": _safe_float(row["p_recover"]),
-                }
-                for _, row in ic_df.iterrows()
-            }
 
     #groups = list(pred_df.groupby(pred_df.index // group_size))
     groups = list(frame.groupby("date"))
@@ -1673,36 +1311,6 @@ def run_backtest(
         day = today.copy()
         day_date = pd.Timestamp(day["date"].iloc[0])
 
-        if ic_breaker_enabled and conf_col != "random_confidence":
-            ic_monitor = ic_monitor_by_date.get(day_date)
-            if ic_monitor is not None:
-                ic_roll = ic_monitor.get("ic_roll")
-                p_roll = ic_monitor.get("p_roll")
-                ic_recover = ic_monitor.get("ic_recover")
-                p_recover = ic_monitor.get("p_recover")
-                if (not ic_breaker_active) and ic_roll is not None and p_roll is not None:
-                    if ic_roll < ic_breaker_min_ic and p_roll > ic_breaker_max_p:
-                        ic_breaker_active = True
-                elif ic_breaker_active and ic_recover is not None and p_recover is not None:
-                    if ic_recover > ic_breaker_recover_ic and p_recover < ic_breaker_recover_p:
-                        ic_breaker_active = False
-
-            if ic_breaker_active:
-                rejection_counts["blocked_by_ic_breaker"] += 1
-                prev_selected = set()
-                portfolio_values.append(capital)
-                continue
-
-        baseline_universe_size = int(baseline_universe_by_date.get(day_date, len(day)))
-        required_universe_size = max(
-            min_daily_universe_size,
-            int(np.ceil(baseline_universe_size * max(0.0, min_daily_universe_fraction))),
-        )
-        if required_universe_size > 0 and len(day) < required_universe_size:
-            rejection_counts["blocked_by_thin_universe"] += 1
-            portfolio_values.append(capital)
-            continue
-
         if use_trade_budget and trades_executed >= max_trades_per_window:
             rejection_counts["trade_budget_exhausted"] += 1
             portfolio_values.append(capital)
@@ -1713,10 +1321,6 @@ def run_backtest(
         day_volatility_regime = float(np.nan_to_num(day["volatility_regime"].median(), nan=1.0)) if "volatility_regime" in day.columns else 1.0
         day_drawdown_state = float(np.nan_to_num(day["nifty_drawdown_63d"].median(), nan=0.0)) if "nifty_drawdown_63d" in day.columns else 0.0
         day_trend_strength = float(np.nan_to_num(day["trend_strength"].median(), nan=0.0)) if "trend_strength" in day.columns else 0.0
-        day_market_volatility = float(np.nan_to_num(day["market_volatility"].median(), nan=1.0)) if "market_volatility" in day.columns else 1.0
-        day_regime_safety_strict = False
-        if regime_safety_enabled and "regime_safety_strict" in day.columns:
-            day_regime_safety_strict = bool(np.nan_to_num(day["regime_safety_strict"].median(), nan=0.0) >= 0.5)
 
         if adaptive_regime_logic:
             is_bad_regime = (
@@ -1741,38 +1345,12 @@ def run_backtest(
             day_min_rank_threshold = min_rank_threshold
             day_min_signal_spread = min_signal_spread
 
-        if day_regime_safety_strict:
-            if is_bad_regime:
-                day_min_signal_spread = strict_spread_threshold_bad
-            elif is_trending_regime:
-                day_min_signal_spread = strict_spread_threshold_trending
-            else:
-                day_min_signal_spread = strict_spread_threshold_neutral
-
         regime_label = _classify_regime_label(
             regime_state=day_regime_state,
             volatility_regime=day_volatility_regime,
             drawdown_state=day_drawdown_state,
             trend_strength_value=day_trend_strength,
         )
-
-        # Track volatility for percentile calculation.
-        volatility_history.append(day_market_volatility)
-        vol_percentile = 0.0
-        if len(volatility_history) > 1:
-            sorted_vols = np.sort(volatility_history)
-            vol_rank = np.searchsorted(sorted_vols, day_market_volatility, side='right')
-            vol_percentile = float(vol_rank / len(volatility_history) * 100.0)
-
-        if is_trending_regime and disable_bullish_trades:
-            rejection_counts["no_candidates_after_rank"] += 1
-            portfolio_values.append(capital)
-            continue
-
-        if day_volatility_regime > bad_volatility_cutoff and disable_high_vol_trades:
-            rejection_counts["blocked_by_high_vol_filter"] += 1
-            portfolio_values.append(capital)
-            continue
 
         day["rank_pct"] = day[conf_col].rank(pct=True, method="first")
         candidates = day[day["rank_pct"] >= day_min_rank_threshold]
@@ -1872,12 +1450,7 @@ def run_backtest(
                 portfolio_values.append(capital)
                 continue
 
-        if is_bad_regime:
-            day_min_top_conf = min_top_confidence_bad
-        elif is_trending_regime:
-            day_min_top_conf = min_top_confidence_trending
-        else:
-            day_min_top_conf = min_top_confidence
+        day_min_top_conf = min_top_confidence_bad if is_bad_regime else min_top_confidence
         if float(top[conf_col].max()) < day_min_top_conf:
             rejection_counts["top_conf_below_threshold"] += 1
             portfolio_values.append(capital)
@@ -1896,19 +1469,9 @@ def run_backtest(
         if is_bad_regime and day_confidence < fallback_conf_threshold_bad:
             fallback_scale = fallback_reduce_factor_bad
 
-        # Proportional volatility-based exposure scaling (replaces binary cool-off).
-        # Exposure shrinks as volatility rises; regime type modulates the base scale.
-        vol_exposure_scale = 1.0 - (vol_percentile / 100.0) * 0.5  # Range: [0.5, 1.0]
-        if regime_label == "BEARISH":
-            regime_exposure_scale = 0.4 * vol_exposure_scale
-        elif regime_label == "BULLISH":
-            regime_exposure_scale = 1.0 * vol_exposure_scale
-        else:  # NEUTRAL
-            regime_exposure_scale = 0.7 * vol_exposure_scale
-        
-        # High volatility can further cap exposure.
-        if day_volatility_regime > bad_volatility_cutoff:
-            regime_exposure_scale = min(regime_exposure_scale, high_vol_exposure_scale)
+        # Smooth protection: scale position impact down in bad regimes.
+        if is_bad_regime:
+            regime_exposure_scale = regime_exposure_scale_bad
 
         # Convert scores to positive values for stable weighting.
         scores = top[conf_col].values
@@ -1917,27 +1480,6 @@ def run_backtest(
         scores = np.power(scores, 1.0 / max(weight_temperature, 1e-6))
         weights = scores / scores.sum()
         weights = np.minimum(weights, max_position_weight)
-        weights = weights / weights.sum()
-
-        if kelly_lite_enabled and conf_col != "random_confidence":
-            conf_array = np.clip(top[conf_col].to_numpy(dtype=np.float64), 1e-6, 1.0 - 1e-6)
-            active_kelly_breakeven = strict_kelly_breakeven if day_regime_safety_strict else kelly_breakeven
-            edge = np.maximum(0.0, conf_array - active_kelly_breakeven)
-            edge_scale = edge / max(1e-6, (1.0 - active_kelly_breakeven))
-            kelly_scale = np.clip(kelly_fraction * edge_scale, 0.0, kelly_cap)
-            weights = weights * kelly_scale
-            if weights.sum() <= 1e-9:
-                rejection_counts["blocked_by_kelly_floor"] += 1
-                portfolio_values.append(capital)
-                continue
-            weights = weights / weights.sum()
-        
-        # Apply regime-volatility exposure scaling to position sizes.
-        weights = weights * regime_exposure_scale
-        if weights.sum() <= 1e-9:
-            rejection_counts["blocked_by_regime_exposure_scale"] += 1
-            portfolio_values.append(capital)
-            continue
         weights = weights / weights.sum()
 
         daily_return = 0
@@ -2597,7 +2139,6 @@ def build_standard_metrics_artifact(real_stats, signal_col="confidence"):
 
     return {
         "generated_at": generated_at_utc,
-        "objective_freeze": OBJECTIVE_FREEZE_META,
         "mode": "backtest_only" if ARGS.backtest_only else "train_and_backtest",
         "signal_mode": signal_mode,
         "model_type": MODEL_TYPE,
@@ -2696,7 +2237,7 @@ def evaluate_promotion_policy(artifact, wf_report, robustness_report):
     require_robustness_pass = os.getenv("QUANT_POLICY_REQUIRE_ROBUSTNESS_PASS", "1").strip() == "1"
     rollback_on_wf_fail = os.getenv("QUANT_POLICY_ROLLBACK_ON_WF_FAIL", "1").strip() == "1"
     rollback_on_robustness_fail = os.getenv("QUANT_POLICY_ROLLBACK_ON_ROBUSTNESS_FAIL", "1").strip() == "1"
-    promote_streak_required = max(1, int(os.getenv("QUANT_POLICY_PROMOTE_STREAK", "3")))
+    promote_streak_required = max(1, int(os.getenv("QUANT_POLICY_PROMOTE_STREAK", "2")))
     rollback_streak_required = max(1, int(os.getenv("QUANT_POLICY_ROLLBACK_STREAK", "2")))
 
     backtest = artifact.get("backtest_summary", {})
@@ -3020,16 +2561,8 @@ print("\nSignal Quality Check...")
 inv_vs_real_sharpe_edge = inv_sharpe - real_sharpe
 inv_vs_real_return_edge = inv_stats["annualized_return"] - real_stats["annualized_return"]
 auto_invert_signal = os.getenv("QUANT_AUTO_INVERT_SIGNAL", "1" if ARGS.backtest_only else "0").strip() == "1"
-force_invert_signal = signal_inversion_mode == "force"
-disable_invert_signal = signal_inversion_mode == "off"
 
-if force_invert_signal:
-    print("[SIGNAL INVERSION FORCED] Using inverted signal by config")
-    real_final, real_sharpe, real_dd, real_curve, real_stats = inv_final, inv_sharpe, inv_dd, inv_curve, inv_stats
-    active_signal_col = inv_signal_col
-elif disable_invert_signal:
-    print("[SIGNAL INVERSION OFF] Keeping regular signal by config")
-elif inv_vs_real_sharpe_edge > 0.5 and inv_final > real_final:
+if inv_vs_real_sharpe_edge > 0.5 and inv_final > real_final:
     print(f"[SIGNAL REVERSAL DETECTED] Inverted signal is {inv_vs_real_sharpe_edge:.3f} Sharpe better")
     if auto_invert_signal:
         print("  Auto-switch enabled: using inverted signal for this run")

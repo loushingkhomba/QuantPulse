@@ -36,6 +36,20 @@ def _build_regime_weights(regime_tensor, stress_weight, neutral_weight, bullish_
     return weights
 
 
+def _false_positive_cost(outputs, labels, power=2.0, threshold=0.55, gate_sharpness=20.0):
+    """Penalize confident positive predictions on negative labels.
+
+    Uses a smooth gate around `threshold` so only predicted-alpha negatives get a heavy cost.
+    """
+    probs = torch.softmax(outputs, dim=1)[:, 1]
+    negative_mask = (labels == 0).to(dtype=probs.dtype)
+    negative_count = torch.clamp(negative_mask.sum(), min=1.0)
+    pred_positive_gate = torch.sigmoid((probs - threshold) * gate_sharpness)
+    fp_excess = torch.clamp(probs - threshold, min=0.0)
+    fp_pressure = pred_positive_gate * torch.pow(fp_excess, power)
+    return torch.sum(fp_pressure * negative_mask) / negative_count
+
+
 def train(
     model,
     X_train,
@@ -63,6 +77,10 @@ def train(
     classification_loss_weight=0.25,
     train_dates=None,
     val_dates=None,
+    false_positive_cost_multiplier=0.0,
+    false_positive_cost_power=2.0,
+    false_positive_cost_threshold=0.55,
+    false_positive_cost_gate_sharpness=20.0,
 ):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -102,6 +120,15 @@ def train(
     print(
         "Class weights:",
         [round(float(class_weights[0].item()), 4), round(float(class_weights[1].item()), 4)]
+    )
+    print(
+        "Transaction-aware FP cost:",
+        {
+            "multiplier": float(false_positive_cost_multiplier),
+            "power": float(false_positive_cost_power),
+            "threshold": float(false_positive_cost_threshold),
+            "gate_sharpness": float(false_positive_cost_gate_sharpness),
+        },
     )
 
     optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
@@ -173,6 +200,17 @@ def train(
             else:
                 loss = cls_loss
 
+            # Transaction-aware objective: heavily penalize false-positive alpha calls.
+            if false_positive_cost_multiplier > 0:
+                fp_cost = _false_positive_cost(
+                    outputs,
+                    batch_y,
+                    power=false_positive_cost_power,
+                    threshold=false_positive_cost_threshold,
+                    gate_sharpness=false_positive_cost_gate_sharpness,
+                )
+                loss = loss + (false_positive_cost_multiplier * fp_cost)
+
             # Penalize overconfident logits to reduce noisy overtrading downstream.
             if confidence_penalty > 0:
                 probs = torch.softmax(outputs, dim=1)
@@ -240,6 +278,16 @@ def train(
                         loss = val_cls_loss
                 else:
                     loss = val_cls_loss
+
+                if false_positive_cost_multiplier > 0:
+                    fp_cost = _false_positive_cost(
+                        outputs,
+                        batch_y,
+                        power=false_positive_cost_power,
+                        threshold=false_positive_cost_threshold,
+                        gate_sharpness=false_positive_cost_gate_sharpness,
+                    )
+                    loss = loss + (false_positive_cost_multiplier * fp_cost)
 
                 total_val_loss += loss.item()
 

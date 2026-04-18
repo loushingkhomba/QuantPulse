@@ -27,22 +27,31 @@ WINDOWS = [
 ]
 
 
-def run_window(tag: str, start: str, end: str) -> dict:
-    log_path = LOGS / f"walkforward_2025_dryrun_{tag}.log"
-    env = os.environ.copy()
+def _build_clean_window_env(start: str, end: str, runtime_env: dict) -> dict:
+    # Prevent stale shell QUANT_* overrides from leaking into month runs.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("QUANT_")}
     env["QUANT_SIGNAL_MODE"] = "model"
     env["QUANT_CARRY_FORWARD_OPEN"] = "1"
-    env["QUANT_TRANSACTION_COST"] = env.get("QUANT_TRANSACTION_COST", "0.0005")
+    env["QUANT_TRANSACTION_COST"] = os.environ.get("QUANT_TRANSACTION_COST", "0.0005")
     env["QUANT_TEST_START"] = start
     env["QUANT_TEST_END"] = end
     env["QUANT_SPLIT_DATE"] = start
+    env.update(runtime_env or {})
+    return env
 
+
+def run_window(tag: str, start: str, end: str) -> dict:
+    log_path = LOGS / f"walkforward_2025_dryrun_{tag}.log"
+    
+    # Get month-type profile as command-line arguments
     profile_args, profile_metadata = apply_month_type_profile(start)
+    env = _build_clean_window_env(start, end, profile_metadata.get("runtime_env", {}))
 
+    # Use venv Python executable to ensure all dependencies are available
     venv_python = ROOT / "venv" / "Scripts" / "python.exe"
     if not venv_python.exists():
-        venv_python = Path(sys.executable)
-
+        venv_python = sys.executable
+    
     cmd = [
         str(venv_python),
         "-u",
@@ -53,6 +62,7 @@ def run_window(tag: str, start: str, end: str) -> dict:
         "--end",
         end,
     ]
+    # Append profile arguments to command
     cmd.extend(profile_args)
 
     print(f"\n=== Running {tag}: {start} to {end} ===")
@@ -86,10 +96,16 @@ def main() -> None:
     out_path = LOGS / "walkforward_2025_12month_comparison.json"
     out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
 
+    report["report_path"] = str(out_path.relative_to(ROOT)).replace("\\", "/")
+    table_text = render_report_table(report)
+    table_path = LOGS / "walkforward_2025_12month_comparison_latest.md"
+    table_path.write_text(table_text + "\n", encoding="utf-8")
+
     print("\n=== 2025 12-month report saved ===")
     print(out_path)
     print("\n=== Latest report table ===")
-    print(render_report_table(report))
+    print(table_text)
+    print(f"\nMarkdown table saved: {table_path.relative_to(ROOT).as_posix()}")
 
 
 if __name__ == "__main__":

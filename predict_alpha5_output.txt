@@ -1,0 +1,62 @@
+﻿======================================================================
+QuantPulse - 5-Day Alpha Prediction vs Actual
+Signal cutoff : 2026-04-11
+Horizon days  : 5
+======================================================================
+[1/5] Loading 2-year cached data...
+Loading cached market data: C:\Users\fioli\OneDrive\Desktop\project\tradingAIAgent\ai_trading_agent\data\cache\zerodha_dataset_2y.pkl
+Cached records: 4960
+Cached date range: 2024-04-15 00:00:00 to 2026-04-15 00:00:00
+      4,960 rows  |  2024-04-15 -> 2026-04-15
+Requested signal cutoff cannot be fully scored at the requested horizon; using latest scorable signal date: 2026-04-07
+[2/5] Creating features (forward-inference)...
+
+Target Distribution:
+target
+0.0    0.569583
+1.0    0.430417
+Name: proportion, dtype: float64
+      2,450 feature rows
+[3/5] Loading ensemble models...
+      3 models loaded
+[4/5] Running inference for each ticker...
+
+  BHARTIARTL.NS       signal=2026-04-07  raw_prob=55.2%  calibrated=51.7%  exit_date=2026-04-15  ret_5d=1.39%  alpha=1.03%
+  HDFCBANK.NS         signal=2026-04-07  raw_prob=54.7%  calibrated=51.6%  exit_date=2026-04-15  ret_5d=4.91%  alpha=4.56%
+  HINDUNILVR.NS       signal=2026-04-07  raw_prob=52.9%  calibrated=51.0%  exit_date=2026-04-15  ret_5d=2.23%  alpha=1.87%
+  ICICIBANK.NS        signal=2026-04-07  raw_prob=54.1%  calibrated=51.4%  exit_date=2026-04-15  ret_5d=8.24%  alpha=7.88%
+  INFY.NS             signal=2026-04-07  raw_prob=47.0%  calibrated=49.0%  exit_date=2026-04-15  ret_5d=-2.55%  alpha=-2.90%
+  ITC.NS              signal=2026-04-07  raw_prob=54.9%  calibrated=51.6%  exit_date=2026-04-15  ret_5d=1.21%  alpha=0.85%
+  LT.NS               signal=2026-04-07  raw_prob=47.4%  calibrated=49.1%  exit_date=2026-04-15  ret_5d=9.48%  alpha=9.13%
+  RELIANCE.NS         signal=2026-04-07  raw_prob=54.5%  calibrated=51.5%  exit_date=2026-04-15  ret_5d=3.03%  alpha=2.67%
+  SBIN.NS             signal=2026-04-07  raw_prob=48.7%  calibrated=49.6%  exit_date=2026-04-15  ret_5d=3.99%  alpha=3.64%
+  TCS.NS              signal=2026-04-07  raw_prob=49.3%  calibrated=49.8%  exit_date=2026-04-15  ret_5d=0.59%  alpha=0.24%
+
+
+====================================================================================================
+  TOP-10 PREDICTION  vs  REALIZED 5-DAY ALPHA  (signal cut-off: 2026-04-07)
+====================================================================================================
+Rk  Stock          Blended%  Calib% Regime Signal Close   Exit Date  StockRet  NiftyRet    Alpha  Result
+----------------------------------------------------------------------------------------------------
+1   BHARTIARTL       57.32%  51.73%    BAD    1830.30  2026-04-15    +1.39%    +0.35%   +1.03%  CORRECT [OK]  *** TOP PICK
+2   TCS              55.09%  49.78%    BAD    2539.80  2026-04-15    +0.59%    +0.35%   +0.24%  CORRECT [OK]  *** TOP PICK
+3   HDFCBANK         52.29%  51.55%    BAD     772.00  2026-04-15    +4.91%    +0.35%   +4.56%  CORRECT [OK]  *** TOP PICK
+4   ITC              51.98%  51.65%    BAD     298.45  2026-04-15    +1.21%    +0.35%   +0.85%  CORRECT [OK]  *** TOP PICK
+5   HINDUNILVR       50.57%  50.95%    BAD    2110.60  2026-04-15    +2.23%    +0.35%   +1.87%  CORRECT [OK]  *** TOP PICK
+6   INFY             49.69%  49.00%    BAD    1339.40  2026-04-15    -2.55%    +0.35%   -2.90%  CORRECT [OK] (avoided)  *** TOP PICK
+7   ICICIBANK        49.48%  51.36%    BAD    1245.50  2026-04-15    +8.24%    +0.35%   +7.88%  missed  [X]  *** TOP PICK
+8   SBIN             48.81%  49.57%    BAD    1030.40  2026-04-15    +3.99%    +0.35%   +3.64%  missed  [X]  *** TOP PICK
+9   LT               45.74%  49.13%    BAD    3723.30  2026-04-15    +9.48%    +0.35%   +9.13%  missed  [X]  *** TOP PICK
+10  RELIANCE         45.19%  51.49%    BAD    1304.60  2026-04-15    +3.03%    +0.35%   +2.67%  missed  [X]  *** TOP PICK
+====================================================================================================
+
+Total tickers evaluated : 10
+Alpha sign accuracy     : 6/10 = 60.0%  (blended > 50% -> positive alpha)
+Top-10 positive-alpha hit : 9/10 = 90.0%
+Top-10 avg stock return   : +3.25%
+Top-10 avg Nifty return   : +0.35%
+Top-10 avg alpha          : +2.90%
+
+Note: Model target = 5-day excess return vs Nifty (> 0.5% alpha over 5 days).
+      This report now evaluates the same target family directly.
+

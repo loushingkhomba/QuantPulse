@@ -145,6 +145,34 @@ def bootstrap_ci(values: List[float], n_boot: int = 2000, alpha: float = 0.05, s
     }
 
 
+def distribution_summary(values: List[float]) -> Dict[str, float]:
+    arr = np.asarray([x for x in values if np.isfinite(x)], dtype=np.float64)
+    if len(arr) == 0:
+        return {
+            "count": 0,
+            "median": 0.0,
+            "q1": 0.0,
+            "q3": 0.0,
+            "iqr": 0.0,
+            "worst_decile": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+        }
+
+    q1 = float(np.quantile(arr, 0.25))
+    q3 = float(np.quantile(arr, 0.75))
+    return {
+        "count": int(len(arr)),
+        "median": float(np.median(arr)),
+        "q1": q1,
+        "q3": q3,
+        "iqr": float(q3 - q1),
+        "worst_decile": float(np.quantile(arr, 0.10)),
+        "min": float(np.min(arr)),
+        "max": float(np.max(arr)),
+    }
+
+
 def run_window(window: Window, frozen_env: Dict[str, str], backtest_only: bool) -> Dict:
     cmd = [sys.executable, "-u", "train.py"]
     if backtest_only:
@@ -258,6 +286,16 @@ def save_outputs(payload: Dict, out_tag: str) -> Tuple[Path, Path]:
     lines.append(f"- Model sharpe mean: {summary['model_sharpe']['mean']:.4f} [{summary['model_sharpe']['ci_low']:.4f}, {summary['model_sharpe']['ci_high']:.4f}]")
     lines.append(f"- Model annualized return % mean: {summary['model_annualized_return_pct']['mean']:.4f} [{summary['model_annualized_return_pct']['ci_low']:.4f}, {summary['model_annualized_return_pct']['ci_high']:.4f}]")
     lines.append(f"- IC mean: {summary['ic_mean']['mean']:.5f} [{summary['ic_mean']['ci_low']:.5f}, {summary['ic_mean']['ci_high']:.5f}]")
+    lines.append("")
+    lines.append("Distribution diagnostics (IQR / worst-decile)")
+    edge_abs = summary["final_edge_abs"]
+    edge_pct = summary["edge_vs_random_pct"]
+    lines.append(
+        f"- Final edge abs: median={edge_abs['median']:.2f}, IQR={edge_abs['iqr']:.2f}, worst_decile={edge_abs['worst_decile']:.2f}"
+    )
+    lines.append(
+        f"- Edge vs random %: median={edge_pct['median']:.3f}, IQR={edge_pct['iqr']:.3f}, worst_decile={edge_pct['worst_decile']:.3f}"
+    )
 
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return json_path, md_path
@@ -313,6 +351,13 @@ def main() -> None:
         "model_sharpe": bootstrap_ci([float(r["model"].get("sharpe") or np.nan) for r in rows]),
         "model_annualized_return_pct": bootstrap_ci([float(r["model"].get("annualized_return_pct") or np.nan) for r in rows]),
         "ic_mean": bootstrap_ci([float(r["signal_quality"].get("ic_mean") or np.nan) for r in rows]),
+        "final_edge_abs": distribution_summary(
+            [
+                float((r["model"].get("final_value") or np.nan) - (r["random"].get("final_value") or np.nan))
+                for r in rows
+            ]
+        ),
+        "edge_vs_random_pct": distribution_summary([float(r["edges_pct"].get("vs_random") or np.nan) for r in rows]),
     }
 
     payload = {

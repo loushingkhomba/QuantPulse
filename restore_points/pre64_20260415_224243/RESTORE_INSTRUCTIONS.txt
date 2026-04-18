@@ -1,0 +1,9 @@
+Restore point: pre64
+Created: 2026-04-15T22:42:43
+
+Rollback command:
+  powershell -ExecutionPolicy Bypass -File "C:\Users\fioli\OneDrive\Desktop\project\tradingAIAgent\ai_trading_agent\restore_points\pre64_20260415_224243\restore.ps1"
+
+What gets restored:
+  - train.py into workspace root
+  - src/model.py into src/
