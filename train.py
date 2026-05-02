@@ -1,5 +1,6 @@
 import argparse
 import json
+from collections import deque
 import torch
 import os
 from pathlib import Path
@@ -30,13 +31,38 @@ from src.regime_experts import fit_regime_experts, apply_regime_expert_probs
 from src.flip_risk import fit_flip_risk_model
 from src.trainer import train
 from src.backtest import calculate_metrics
-from src.constants import FROZEN_OBJECTIVE_V1_PARAMS, enforce_objective_freeze
+from src.constants import get_frozen_objective_params, enforce_objective_freeze
+from src.profile_loader import get_active_profile, get_model_path
 
 
-for _freeze_key, _freeze_value in FROZEN_OBJECTIVE_V1_PARAMS.items():
+_profile_name = os.getenv("QUANT_PROFILE", "live").strip().lower()
+try:
+    _active_profile = get_active_profile()
+except FileNotFoundError:
+    _active_profile = {}
+
+# Expanded/V3 profile needs 3-day target grid; allow override for frozen target keys only.
+if _profile_name in ("expanded", "v3robustnifty50"):
+    os.environ.setdefault("QUANT_OBJECTIVE_FREEZE_ALLOW_TARGET_GRID", "1")
+
+if _profile_name == "v3robustnifty50":
+    os.environ.setdefault("QUANT_OBJECTIVE_FREEZE_PRESET", "v3robustnifty50")
+
+_freeze_preset = os.getenv("QUANT_OBJECTIVE_FREEZE_PRESET", "v1").strip().lower()
+_frozen_objective_params = get_frozen_objective_params(_freeze_preset)
+
+
+for _freeze_key, _freeze_value in _frozen_objective_params.items():
     os.environ.setdefault(_freeze_key, _freeze_value)
 
-OBJECTIVE_FREEZE_META = enforce_objective_freeze(strict=True)
+for _k, _v in _active_profile.get("frozen_params", {}).items():
+    # Expanded profile should actively override target/holding horizon and related params.
+    if _profile_name == "expanded":
+        os.environ[str(_k)] = str(_v)
+    else:
+        os.environ.setdefault(str(_k), str(_v))
+
+OBJECTIVE_FREEZE_META = enforce_objective_freeze(strict=True, preset=_freeze_preset)
 print(
     "Objective freeze:",
     {
@@ -46,8 +72,11 @@ print(
     },
 )
 
-MODEL_PATH = "models/quantpulse_model.pth"
-CHECKPOINT_PATH = "models/quantpulse_checkpoint.pth"
+MODEL_PATH = str(get_model_path())
+_model_path_obj = Path(MODEL_PATH)
+CHECKPOINT_PATH = str(
+    _model_path_obj.with_name(_model_path_obj.name.replace("model", "checkpoint", 1))
+)
 RESUME_TRAINING = False
 MODEL_TYPE = "simple"  # "lstm", "mlp", or "simple" (simple recommended for robustness)
 TEST_FRACTION = 0.20
@@ -63,6 +92,11 @@ FP_COST_MULTIPLIER = float(os.getenv("QUANT_FP_COST_MULTIPLIER", "0.0"))
 FP_COST_POWER = float(os.getenv("QUANT_FP_COST_POWER", "2.0"))
 FP_COST_THRESHOLD = float(os.getenv("QUANT_FP_COST_THRESHOLD", "0.55"))
 FP_COST_GATE_SHARPNESS = float(os.getenv("QUANT_FP_COST_GATE_SHARPNESS", "20.0"))
+FP_COST_RANDOMIZATION_ENABLED = os.getenv("QUANT_FP_COST_RANDOMIZATION_ENABLED", "0").strip() == "1"
+FP_COST_RANDOMIZATION_MIN = float(os.getenv("QUANT_FP_COST_RANDOMIZATION_MIN", "1.0"))
+FP_COST_RANDOMIZATION_MAX = float(os.getenv("QUANT_FP_COST_RANDOMIZATION_MAX", "1.0"))
+FP_COST_WARMUP_EPOCHS = int(os.getenv("QUANT_FP_COST_WARMUP_EPOCHS", "0"))
+FP_COST_RAMP_EPOCHS = int(os.getenv("QUANT_FP_COST_RAMP_EPOCHS", "1"))
 SEED = int(os.getenv("QUANT_SEED", "42"))
 ENSEMBLE_SEEDS_ENV = os.getenv("QUANT_ENSEMBLE_SEEDS", "42,123,777")
 if ENSEMBLE_SEEDS_ENV.strip():
@@ -380,6 +414,11 @@ print(
         "power": FP_COST_POWER,
         "threshold": FP_COST_THRESHOLD,
         "gate_sharpness": FP_COST_GATE_SHARPNESS,
+        "randomized": FP_COST_RANDOMIZATION_ENABLED,
+        "randomization_min": min(FP_COST_RANDOMIZATION_MIN, FP_COST_RANDOMIZATION_MAX),
+        "randomization_max": max(FP_COST_RANDOMIZATION_MIN, FP_COST_RANDOMIZATION_MAX),
+        "warmup_epochs": FP_COST_WARMUP_EPOCHS,
+        "ramp_epochs": FP_COST_RAMP_EPOCHS,
     },
 )
 print("Hidden sizes:", {"simple": SIMPLE_HIDDEN_SIZE, "mlp": MLP_HIDDEN_SIZE, "lstm": LSTM_HIDDEN_SIZE})
@@ -671,6 +710,11 @@ if signal_mode == "model":
                 false_positive_cost_power=FP_COST_POWER,
                 false_positive_cost_threshold=FP_COST_THRESHOLD,
                 false_positive_cost_gate_sharpness=FP_COST_GATE_SHARPNESS,
+                false_positive_cost_randomization_enabled=FP_COST_RANDOMIZATION_ENABLED,
+                false_positive_cost_randomization_min=FP_COST_RANDOMIZATION_MIN,
+                false_positive_cost_randomization_max=FP_COST_RANDOMIZATION_MAX,
+                false_positive_cost_warmup_epochs=FP_COST_WARMUP_EPOCHS,
+                false_positive_cost_ramp_epochs=FP_COST_RAMP_EPOCHS,
                 train_dates=train_dates_loop_tensor if OBJECTIVE_MODE == "ranking" else None,
                 val_dates=val_dates_loop_tensor if OBJECTIVE_MODE == "ranking" else None,
             )
@@ -1398,10 +1442,26 @@ if trade_acceptance_enabled and test_window_start is not None:
         pred_df = pred_df.merge(gate_prob_map, on=["date", "ticker"], how="left")
         pred_df["trade_accept_prob"] = pred_df["trade_accept_prob_gate"].fillna(1.0)
         pred_df.drop(columns=["trade_accept_prob_gate"], inplace=True)
+        # ── HYBRID VETO: deterministic circuit breaker applied on pred_df directly ──
+        _veto_drawdown = float(os.getenv("QUANT_VETO_DRAWDOWN", "-0.06"))
+        _veto_vol      = float(os.getenv("QUANT_VETO_VOL",      "1.20"))
+        _veto_mask = pd.Series(False, index=pred_df.index)
+        if "nifty_drawdown_63d" in pred_df.columns:
+            _veto_mask |= (pred_df["nifty_drawdown_63d"] < _veto_drawdown)
+        if "volatility_regime" in pred_df.columns:
+            _veto_mask |= (pred_df["volatility_regime"] > _veto_vol)
+        _n_vetoed = int(_veto_mask.sum())
+        if _n_vetoed > 0:
+            pred_df.loc[_veto_mask, "trade_accept_prob"] = 0.0
+            print(f"[HYBRID VETO] Hard-clamped {_n_vetoed} rows in pred_df to 0.0 "
+                  f"(drawdown<{_veto_drawdown} or vol>{_veto_vol})")
+        # ─────────────────────────────────────────────────────────────────────────
         if trade_acceptance_threshold_override:
             trade_acceptance_active_threshold = float(trade_acceptance_threshold_override)
         else:
-            trade_acceptance_active_threshold = float(trade_acceptance_result["threshold"])
+            # Veto-only mode: threshold=epsilon so only hard-clamped rows (prob=0.0) get blocked.
+            # ML-derived threshold disabled — OOD bull-trained gate inverts in bear regimes.
+            trade_acceptance_active_threshold = 0.001
         trade_acceptance_meta = {
             "enabled": True,
             "threshold": trade_acceptance_active_threshold,
@@ -1550,7 +1610,7 @@ def run_backtest(
     carry_forward_open = os.getenv("QUANT_CARRY_FORWARD_OPEN", "1" if ARGS.backtest_only else "0").strip() == "1"
     capture_details = conf_col != "random_confidence"
     if apply_kill_switch is None:
-        apply_kill_switch = (conf_col == "confidence")
+        apply_kill_switch = conf_col not in ("random_confidence", "inv_feature_signal")
     use_trade_budget = trade_budget_mode == "window" and max_trades_per_window > 0
     frame = signal_frame if signal_frame is not None else pred_df
     effective_transaction_cost = transaction_cost if transaction_cost_override is None else float(transaction_cost_override)
@@ -1575,6 +1635,7 @@ def run_backtest(
         "empty_after_universe_intersection": 0,
         "no_candidates_after_rank": 0,
         "blocked_by_thin_universe": 0,
+        "blocked_by_cash_mode": 0,
         "no_rows_after_turnover_cooldown": 0,
         "blocked_by_trade_acceptance": 0,
         "blocked_by_regime_expert": 0,
@@ -1591,6 +1652,11 @@ def run_backtest(
         "blocked_by_kelly_floor": 0,
         "blocked_by_regime_exposure_scale": 0,
     }
+    gate_diagnostics = {
+        "days_in_cash_mode": 0,
+        "days_circuit_breaker_tier1": 0,
+        "days_circuit_breaker_tier2": 0,
+    }
     trade_records = []
     day_records = []
 
@@ -1606,6 +1672,16 @@ def run_backtest(
     kelly_fraction = float(os.getenv("QUANT_KELLY_FRACTION", "0.20"))
     kelly_breakeven = float(os.getenv("QUANT_KELLY_BREAKEVEN", "0.50"))
     kelly_cap = float(os.getenv("QUANT_KELLY_CAP", "0.35"))
+
+    cash_mode_enabled = os.getenv("QUANT_CASH_MODE_ENABLED", "1").strip() == "1"
+    cash_mode_min_ic = float(os.getenv("QUANT_CASH_MODE_MIN_IC", "0.0"))
+    cash_mode_min_sharpe = float(os.getenv("QUANT_CASH_MODE_MIN_SHARPE", "-0.5"))
+    circuit_breaker_enabled = os.getenv("QUANT_CIRCUIT_BREAKER_ENABLED", "1").strip() == "1"
+    circuit_sharpe_tier1 = float(os.getenv("QUANT_CIRCUIT_SHARPE_TIER1", "-1.0"))
+    circuit_sharpe_tier2 = float(os.getenv("QUANT_CIRCUIT_SHARPE_TIER2", "-2.0"))
+    circuit_risk_tier1 = float(os.getenv("QUANT_CIRCUIT_RISK_TIER1", "0.5"))
+    circuit_risk_tier2 = float(os.getenv("QUANT_CIRCUIT_RISK_TIER2", "0.0"))
+    strategy_gate_eligible = conf_col not in ("random_confidence", "inv_feature_signal")
     
     # Volatility-based exposure scaling (replaces binary cool-off).
     volatility_history = []
@@ -1636,6 +1712,26 @@ def run_backtest(
                 }
                 for _, row in ic_df.iterrows()
             }
+
+    # ------------------------------------------------------------------
+    # Live rolling state tracker (no look-ahead)
+    # IC[date=t] = spearmanr(conf_t, return_{t+1}).  At decision time for
+    # day t we read IC[t-1] (return_t already settled).  Rolling Sharpe
+    # uses only settled trade returns appended at end of each trade day.
+    # ------------------------------------------------------------------
+    _rolling_state_window = int(os.getenv("QUANT_ROLLING_STATE_WINDOW", "20"))
+    _raw_ic_by_date: dict = {}
+    if "future_return_1d" in frame.columns and conf_col not in ("random_confidence", "inv_feature_signal"):
+        for _ic_date, _ic_group in frame.groupby("date"):
+            _valid = _ic_group[[conf_col, "future_return_1d"]].dropna()
+            if len(_valid) >= 3:
+                _ic_val, _ = spearmanr(_valid[conf_col].to_numpy(), _valid["future_return_1d"].to_numpy())
+                if np.isfinite(_ic_val):
+                    _raw_ic_by_date[pd.Timestamp(_ic_date)] = float(_ic_val)
+    daily_returns_deque: deque = deque(maxlen=_rolling_state_window)
+    daily_ic_deque: deque = deque(maxlen=_rolling_state_window)
+    rolling_sharpe_live: float | None = None
+    rolling_ic_live: float | None = None
 
     #groups = list(pred_df.groupby(pred_df.index // group_size))
     groups = list(frame.groupby("date"))
@@ -1672,6 +1768,73 @@ def run_backtest(
 
         day = today.copy()
         day_date = pd.Timestamp(day["date"].iloc[0])
+
+        # Feed yesterday's settled IC into deque, then compute live rolling stats.
+        # IC[t-1] = spearmanr(conf_{t-1}, return_t) — return_t is past at this point.
+        if i > 0:
+            _prev_date = pd.Timestamp(groups[i - 1][0])
+            _prev_ic = _raw_ic_by_date.get(_prev_date)
+            if _prev_ic is not None:
+                daily_ic_deque.append(_prev_ic)
+        _min_periods = 5
+        if len(daily_returns_deque) >= _min_periods:
+            _r = np.array(daily_returns_deque, dtype=np.float64)
+            _std = _r.std()
+            rolling_sharpe_live = float(_r.mean() / (_std + 1e-9) * np.sqrt(252))
+        else:
+            rolling_sharpe_live = None
+        if len(daily_ic_deque) >= _min_periods:
+            rolling_ic_live = float(np.mean(daily_ic_deque))
+        else:
+            rolling_ic_live = None
+
+        # Priority-2 edge monitor + circuit breaker.
+        edge_monitor_armed = (len(daily_returns_deque) == _rolling_state_window)
+        allow_new_entries = True
+        cash_mode_reason = ""
+        current_risk_multiplier = 1.0
+        if strategy_gate_eligible and cash_mode_enabled and edge_monitor_armed:
+            if rolling_ic_live is not None and rolling_sharpe_live is not None:
+                if rolling_ic_live < cash_mode_min_ic and rolling_sharpe_live < cash_mode_min_sharpe:
+                    allow_new_entries = False
+                    cash_mode_reason = f"edge_loss(ic={rolling_ic_live:.3f}, sharpe={rolling_sharpe_live:.2f})"
+
+        if strategy_gate_eligible and circuit_breaker_enabled and edge_monitor_armed and rolling_sharpe_live is not None:
+            if rolling_sharpe_live < circuit_sharpe_tier2:
+                current_risk_multiplier = float(np.clip(circuit_risk_tier2, 0.0, 1.0))
+                gate_diagnostics["days_circuit_breaker_tier2"] += 1
+            elif rolling_sharpe_live < circuit_sharpe_tier1:
+                current_risk_multiplier = float(np.clip(circuit_risk_tier1, 0.0, 1.0))
+                gate_diagnostics["days_circuit_breaker_tier1"] += 1
+
+        if strategy_gate_eligible and current_risk_multiplier <= 0.0:
+            allow_new_entries = False
+            if not cash_mode_reason:
+                cash_mode_reason = f"circuit_tier2(sharpe={rolling_sharpe_live:.2f})"
+
+        if strategy_gate_eligible and not allow_new_entries:
+            gate_diagnostics["days_in_cash_mode"] += 1
+            rejection_counts["blocked_by_cash_mode"] += 1
+            if capture_details:
+                day_records.append(
+                    {
+                        "date": day_date,
+                        "selected_tickers": [],
+                        "signal_spread": None,
+                        "regime_label": "CASH_MODE",
+                        "signal_bucket": None,
+                        "top_confidence": None,
+                        "acceptance_mean": None,
+                        "changed_count": 0,
+                        "gate_reason": cash_mode_reason,
+                        "rolling_ic_live": rolling_ic_live,
+                        "rolling_sharpe_live": rolling_sharpe_live,
+                    }
+                )
+            prev_selected = set()
+            daily_returns_deque.append(0.0)
+            portfolio_values.append(capital)
+            continue
 
         if ic_breaker_enabled and conf_col != "random_confidence":
             ic_monitor = ic_monitor_by_date.get(day_date)
@@ -1780,11 +1943,11 @@ def run_backtest(
         had_rank_candidates = len(top) > 0
 
         # Stage-B Phase-1 gate: global acceptance MLP.
-        if trade_acceptance_meta.get("enabled") and conf_col == "confidence" and "trade_accept_prob" in top.columns:
+        if trade_acceptance_meta.get("enabled") and conf_col not in ("random_confidence", "inv_feature_signal") and "trade_accept_prob" in top.columns:
             top = top[top["trade_accept_prob"] >= trade_acceptance_active_threshold]
 
         if len(top) == 0:
-            if had_rank_candidates and trade_acceptance_meta.get("enabled") and conf_col == "confidence":
+            if had_rank_candidates and trade_acceptance_meta.get("enabled") and conf_col not in ("random_confidence", "inv_feature_signal"):
                 rejection_counts["blocked_by_trade_acceptance"] += 1
             else:
                 rejection_counts["no_candidates_after_rank"] += 1
@@ -1792,7 +1955,7 @@ def run_backtest(
             continue
 
         # Stage-B Phase-2 gate: per-regime expert MLP.
-        if regime_experts_meta.get("enabled") and conf_col == "confidence" and "regime_accept_prob" in top.columns:
+        if regime_experts_meta.get("enabled") and conf_col not in ("random_confidence", "inv_feature_signal") and "regime_accept_prob" in top.columns:
             top = top[top["regime_accept_prob"] >= top["regime_expert_threshold"]]
             if len(top) == 0:
                 rejection_counts["blocked_by_regime_expert"] += 1
@@ -1800,7 +1963,7 @@ def run_backtest(
                 continue
 
         # Phase-4: meta-label filter for likely short-term direction flips.
-        if flip_risk_meta.get("enabled") and conf_col == "confidence" and "flip_risk_prob" in top.columns:
+        if flip_risk_meta.get("enabled") and conf_col not in ("random_confidence", "inv_feature_signal") and "flip_risk_prob" in top.columns:
             top = top[top["flip_risk_prob"] <= flip_risk_active_threshold]
             if len(top) == 0:
                 rejection_counts["blocked_by_flip_risk"] += 1
@@ -2012,7 +2175,7 @@ def run_backtest(
 
         if active_weight > 0:
             daily_return = daily_return / active_weight
-            daily_return = daily_return * fallback_scale * regime_exposure_scale
+            daily_return = daily_return * fallback_scale * regime_exposure_scale * current_risk_multiplier
             trade_days += 1
             if volatility_regime > bad_volatility_cutoff:
                 regime_day_returns["high_vol"].append(daily_return)
@@ -2024,6 +2187,7 @@ def run_backtest(
                 regime_day_returns["neutral"].append(daily_return)
         else:
             rejection_counts["active_weight_zero"] += 1
+            daily_returns_deque.append(0.0)
             portfolio_values.append(capital)
             continue
 
@@ -2032,6 +2196,7 @@ def run_backtest(
 
         capital *= (1 + daily_return)
         peak_capital = max(peak_capital, capital)
+        daily_returns_deque.append(float(daily_return))
 
         # Stop trading if drawdown breach occurs.
         drawdown = (capital - peak_capital) / peak_capital
@@ -2080,6 +2245,7 @@ def run_backtest(
         "annualized_return": float(annualized_return),
         "regime_perf": {},
         "rejection_counts": rejection_counts,
+        "gate_diagnostics": gate_diagnostics,
         "trade_records": trade_records,
         "day_records": day_records,
     }
@@ -3119,6 +3285,9 @@ for regime_name, regime_metrics in real_stats["regime_perf"].items():
 print("Rejection diagnostics:")
 for k, v in real_stats.get("rejection_counts", {}).items():
     print(f"  {k}: {v}")
+print("Gate diagnostics:")
+for k, v in real_stats.get("gate_diagnostics", {}).items():
+    print(f"  {k}: {v}")
 
 print("\nRANDOM BASELINE")
 print("Final Value:", round(rand_final, 2))
@@ -3130,6 +3299,9 @@ print("Trades Executed:", rand_stats["trades_executed"])
 print("Rejection diagnostics:")
 for k, v in rand_stats.get("rejection_counts", {}).items():
     print(f"  {k}: {v}")
+print("Gate diagnostics:")
+for k, v in rand_stats.get("gate_diagnostics", {}).items():
+    print(f"  {k}: {v}")
 
 print("\nINVERTED SIGNAL (DIAGNOSTIC)")
 print("Final Value:", round(inv_final, 2))
@@ -3140,6 +3312,9 @@ print("Trade Days:", inv_stats["trade_days"])
 print("Trades Executed:", inv_stats["trades_executed"])
 print("Rejection diagnostics:")
 for k, v in inv_stats.get("rejection_counts", {}).items():
+    print(f"  {k}: {v}")
+print("Gate diagnostics:")
+for k, v in inv_stats.get("gate_diagnostics", {}).items():
     print(f"  {k}: {v}")
 
 print("\nNIFTY BUY & HOLD")
